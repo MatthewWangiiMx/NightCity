@@ -209,7 +209,11 @@ def load_run(run_id: str) -> RunResult | None:
         )
 
 
-def recent_telemetry(district_id: str, limit: int = 500) -> list[TimeStep]:
+def recent_telemetry(
+    district_id: str,
+    limit: int = 500,
+    variant: str = "optimized",
+) -> list[TimeStep]:
     """Hypertable read: the most recent district-level steps, oldest first."""
     with get_session() as s:
         if s is None:
@@ -218,11 +222,228 @@ def recent_telemetry(district_id: str, limit: int = 500) -> list[TimeStep]:
             text(
                 f"SELECT t, {', '.join(_STEP_COLS)} FROM telemetry "
                 "WHERE district_id = :district_id AND asset_id IS NULL "
+                "  AND variant = :variant "
                 "ORDER BY t DESC LIMIT :limit"
             ),
-            {"district_id": district_id, "limit": limit},
+            {"district_id": district_id, "limit": limit, "variant": variant},
         ).mappings().all()
         return [TimeStep(**row) for row in reversed(rows)]
+
+
+def latest_run_id(district_id: str) -> str | None:
+    with get_session() as s:
+        if s is None:
+            return None
+        return s.execute(
+            text(
+                "SELECT id FROM runs WHERE district_id = :district_id "
+                "ORDER BY created_at DESC LIMIT 1"
+            ),
+            {"district_id": district_id},
+        ).scalar()
+
+
+def list_weather_observations(
+    *,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    limit: int = 168,
+) -> list[WeatherObservation]:
+    """Recent hourly weather from TigerData, oldest first."""
+    with get_session() as s:
+        if s is None:
+            return []
+
+        if latitude is not None and longitude is not None:
+            rows = s.execute(
+                text(
+                    """
+                    SELECT observation_time, latitude, longitude, temperature_2m_c,
+                           precipitation_mm, wind_speed_10m_kmh, weather_code
+                    FROM weather_observations
+                    WHERE ABS(latitude - :lat) < 0.05 AND ABS(longitude - :lon) < 0.05
+                    ORDER BY observation_time DESC
+                    LIMIT :limit
+                    """
+                ),
+                {"lat": latitude, "lon": longitude, "limit": limit},
+            ).mappings().all()
+        else:
+            rows = s.execute(
+                text(
+                    """
+                    SELECT observation_time, latitude, longitude, temperature_2m_c,
+                           precipitation_mm, wind_speed_10m_kmh, weather_code
+                    FROM weather_observations
+                    ORDER BY observation_time DESC
+                    LIMIT :limit
+                    """
+                ),
+                {"limit": limit},
+            ).mappings().all()
+
+        return [WeatherObservation(**dict(row)) for row in reversed(rows)]
+
+
+def _apply_weather_to_steps(
+    steps: list[TimeStep],
+    weather: list[WeatherObservation],
+) -> list[TimeStep]:
+    """Fill missing indoor_temp from nearest outdoor observation (weather proxy)."""
+    if not steps or not weather:
+        return steps
+
+    out: list[TimeStep] = []
+    for step in steps:
+        if step.indoor_temp_c is not None:
+            out.append(step)
+            continue
+        nearest = min(
+            weather,
+            key=lambda w: abs((w.observation_time - step.t).total_seconds()),
+        )
+        # Only use weather within 2 hours of the step.
+        if abs((nearest.observation_time - step.t).total_seconds()) > 7200:
+            out.append(step)
+            continue
+        outdoor = nearest.temperature_2m_c
+        if outdoor is None:
+            out.append(step)
+            continue
+        # Simple indoor proxy: outdoor tempered toward comfort band.
+        indoor = round(20.5 + (outdoor - 15.0) * 0.18, 2)
+        out.append(step.model_copy(update={"indoor_temp_c": indoor}))
+    return out
+
+
+def list_buildings_for_loads(limit: int = 1200) -> list[dict]:
+    """Building rows with centroid + footprint for load synthesis."""
+    with get_session() as s:
+        if s is None:
+            return []
+        from app.buildings_massing import LAT_MAX, LAT_MIN, LON_MAX, LON_MIN
+
+        rows = s.execute(
+            text(
+                """
+                SELECT id, height_m, levels, properties,
+                       ST_X(ST_Centroid(geom)) AS lon,
+                       ST_Y(ST_Centroid(geom)) AS lat,
+                       ST_Area(geography(ST_Force2D(geom))) AS footprint_m2
+                FROM buildings
+                WHERE geom && ST_MakeEnvelope(:lon_min, :lat_min, :lon_max, :lat_max, 4326)
+                ORDER BY COALESCE(height_m, 0) DESC
+                LIMIT :limit
+                """
+            ),
+            {
+                "lon_min": LON_MIN,
+                "lat_min": LAT_MIN,
+                "lon_max": LON_MAX,
+                "lat_max": LAT_MAX,
+                "limit": limit,
+            },
+        ).mappings().all()
+        return [dict(row) for row in rows]
+
+
+def load_building_profiles(limit: int = 1200):
+    """TigerData buildings first; fall back to Explore City massing JSON."""
+    from app.sim.building_loads import profiles_from_massing_cache, profiles_from_tiger_rows
+
+    rows = list_buildings_for_loads(limit=limit)
+    if rows:
+        return profiles_from_tiger_rows(rows, limit=limit), "tigerdata"
+    cached = profiles_from_massing_cache(limit=limit)
+    if cached:
+        return cached, "massing-cache"
+    return [], "none"
+
+
+def load_live_run(district_id: str = "nightcity") -> RunResult | None:
+    """Build a RunResult whose demand matches real building stock + weather."""
+    from app.sim.building_loads import district_from_buildings, synthesize_steps_from_buildings
+    from app.sim.district import get_district
+    from app.sim.scenarios import SCENARIOS
+    from app.sim.simulator import compute_metrics, grid_status
+    from app.schemas.models import ScenarioKind
+
+    weather = list_weather_observations(limit=168)
+    profiles, building_source = load_building_profiles()
+
+    # Prefer timesteps synthesized from actual buildings so demand matches the city.
+    if profiles:
+        district = district_from_buildings(profiles, district_id=district_id)
+        baseline = synthesize_steps_from_buildings(profiles, weather, optimized=False)
+        optimized = synthesize_steps_from_buildings(profiles, weather, optimized=True)
+        if baseline and optimized:
+            return RunResult(
+                run_id=f"buildings-{district_id}",
+                scenario=SCENARIOS[ScenarioKind.BASELINE],
+                district=district,
+                baseline=baseline,
+                optimized=optimized,
+                baseline_metrics=compute_metrics(baseline),
+                optimized_metrics=compute_metrics(optimized),
+                grid_status=grid_status(optimized),
+                actions=[],
+                explanation=(
+                    f"Demand aggregated from {len(profiles)} real buildings "
+                    f"({building_source}) with TigerData weather when available."
+                ),
+                is_simulated=True,
+                weather=weather,
+                source=f"buildings-{building_source}",
+            )
+
+    run_id = latest_run_id(district_id)
+    if run_id:
+        stored = load_run(run_id)
+        if stored is not None and (stored.baseline or stored.optimized):
+            baseline = _apply_weather_to_steps(stored.baseline, weather)
+            optimized = _apply_weather_to_steps(stored.optimized or baseline, weather)
+            return stored.model_copy(
+                update={
+                    "baseline": baseline,
+                    "optimized": optimized,
+                    "baseline_metrics": compute_metrics(baseline),
+                    "optimized_metrics": compute_metrics(optimized),
+                    "grid_status": grid_status(optimized),
+                    "weather": weather,
+                    "source": "tigerdata-run",
+                    "explanation": stored.explanation
+                    or "Loaded from TigerData (stored run + weather observations).",
+                }
+            )
+
+    optimized = recent_telemetry(district_id, limit=500, variant="optimized")
+    baseline = recent_telemetry(district_id, limit=500, variant="baseline")
+    if not optimized and not baseline:
+        return None
+    if not optimized:
+        optimized = baseline
+    if not baseline:
+        baseline = optimized
+
+    baseline = _apply_weather_to_steps(baseline, weather)
+    optimized = _apply_weather_to_steps(optimized, weather)
+    scenario = SCENARIOS[ScenarioKind.BASELINE]
+
+    return RunResult(
+        run_id=f"tiger-{district_id}",
+        scenario=scenario,
+        district=get_district(district_id),
+        baseline=baseline,
+        optimized=optimized,
+        baseline_metrics=compute_metrics(baseline),
+        optimized_metrics=compute_metrics(optimized),
+        grid_status=grid_status(optimized),
+        actions=[],
+        explanation="Loaded from TigerData telemetry + weather_observations.",
+        is_simulated=True,
+        weather=weather,
+        source="tigerdata-telemetry",
+    )
 
 
 def list_buildings_for_massing(

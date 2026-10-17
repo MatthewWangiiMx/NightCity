@@ -41,6 +41,8 @@ export interface TimeStep {
   battery_soc: number;
   grid_import_mw: number;
   indoor_temp_c: number | null;
+  /** Set for per-building rows; null on district aggregates (sum of buildings). */
+  building_id?: string | null;
 }
 
 export interface GridStatus {
@@ -85,6 +87,16 @@ export interface RunRequest {
   params: Record<string, number>;
 }
 
+export interface WeatherObservation {
+  observation_time: string;
+  latitude: number;
+  longitude: number;
+  temperature_2m_c: number | null;
+  precipitation_mm: number | null;
+  wind_speed_10m_kmh: number | null;
+  weather_code: number | null;
+}
+
 export interface RunResult {
   run_id: string;
   scenario: Scenario;
@@ -97,4 +109,6 @@ export interface RunResult {
   actions: DispatchAction[];
   explanation: string | null;
   is_simulated: boolean;
+  weather?: WeatherObservation[];
+  source?: 'demo' | 'tigerdata-run' | 'tigerdata-telemetry' | string;
 }

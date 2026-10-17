@@ -52,7 +52,17 @@ export function ChartTooltip({ active, payload, label }: TooltipProps<number, st
   );
 }
 
-/** Disruption marker. Snapped to the nearest 15-minute tick on the category axis. */
+/** Disruption marker snapped to a category tick (demo index, else mid-window). */
+export function eventMarkerFor(rows: { label: string }[]) {
+  if (!rows.length) return null;
+  const idx = Math.min(EVENT_STEP, rows.length - 1);
+  return {
+    x: rows[idx]?.label ?? rows[Math.floor(rows.length / 2)].label,
+    label: `${EVENT_LABEL} ${EVENT_TIME}`,
+  };
+}
+
+/** @deprecated prefer eventMarkerFor(rows) so TigerData windows align. */
 export const eventMarker = {
   x: TIME_LABELS[EVENT_STEP],
   label: `${EVENT_LABEL} ${EVENT_TIME}`,

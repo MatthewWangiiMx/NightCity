@@ -61,6 +61,18 @@ const PREVIEW_LOOK = new Vector3(40, 90, -80);
 const EXPLORE_POS = new Vector3(80, 140, 520);
 const EXPLORE_LOOK = new Vector3(0, 180, 0);
 const ZOOM_MS = 1600;
+const SEARCH_FLY_MS = 1400;
+
+type SearchTarget = {
+  id: string;
+  name: string;
+  short?: string;
+  kind: string;
+  x: number;
+  z: number;
+  h: number;
+  footprint_m2: number;
+};
 
 const MOVE = {
   forward: false,
@@ -509,7 +521,7 @@ function buildCityMesh(
     group.add(dimMesh);
   }
 
-  // Landmark extras + futuristic name signs
+  // Named landmarks only — massing/TigerData rows have no building names.
   for (const match of matches) {
     if (match.landmark.id !== 'cn-tower') addLandmarkExtras(match, group);
     else {
@@ -804,6 +816,127 @@ function easeInOutCubic(t: number) {
   return t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
 }
 
+function BuildingSearch({
+  targets,
+  onSelect,
+  onActivate,
+}: {
+  targets: SearchTarget[];
+  onSelect: (target: SearchTarget) => void;
+  onActivate?: () => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  const q = query.trim().toLowerCase();
+  const results =
+    q.length < 1
+      ? []
+      : targets
+          .filter((t) => {
+            const name = t.name.toLowerCase();
+            const short = (t.short ?? '').toLowerCase();
+            return name.includes(q) || short.includes(q) || t.id.includes(q);
+          })
+          .slice(0, 8);
+
+  useEffect(() => {
+    const onDoc = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, []);
+
+  const choose = (target: SearchTarget) => {
+    setQuery(target.short ?? target.name);
+    setOpen(false);
+    onSelect(target);
+  };
+
+  return (
+    <div ref={rootRef} className="pointer-events-auto relative w-[min(20rem,calc(100vw-1.5rem))]">
+      <label className="sr-only" htmlFor="building-search">
+        Search buildings
+      </label>
+      <div className="flex items-center gap-2 rounded-xl border border-cyan-400/35 bg-[#061018]/90 px-3 py-2 shadow-lg shadow-cyan-500/10 backdrop-blur-md">
+        <svg
+          viewBox="0 0 20 20"
+          className="h-4 w-4 shrink-0 text-cyan-300/80"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          aria-hidden
+        >
+          <circle cx="8.5" cy="8.5" r="5.5" />
+          <path d="M13 13l4 4" strokeLinecap="round" />
+        </svg>
+        <input
+          id="building-search"
+          type="search"
+          autoComplete="off"
+          placeholder="Search buildings…"
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setOpen(true);
+            setActive(0);
+          }}
+          onFocus={() => {
+            onActivate?.();
+            setOpen(true);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowDown') {
+              e.preventDefault();
+              setActive((i) => Math.min(results.length - 1, i + 1));
+            } else if (e.key === 'ArrowUp') {
+              e.preventDefault();
+              setActive((i) => Math.max(0, i - 1));
+            } else if (e.key === 'Enter') {
+              e.preventDefault();
+              const hit = results[active] ?? results[0];
+              if (hit) choose(hit);
+            } else if (e.key === 'Escape') {
+              setOpen(false);
+              (e.target as HTMLInputElement).blur();
+            }
+          }}
+          className="min-w-0 flex-1 bg-transparent text-sm text-nc-text outline-none placeholder:text-nc-muted/70"
+        />
+      </div>
+      {open && results.length > 0 && (
+        <ul className="absolute bottom-[calc(100%+0.4rem)] left-0 right-0 max-h-64 overflow-auto rounded-xl border border-cyan-400/30 bg-[#061018]/95 py-1 shadow-xl backdrop-blur-md">
+          {results.map((t, i) => (
+            <li key={t.id}>
+              <button
+                type="button"
+                onMouseEnter={() => setActive(i)}
+                onClick={() => choose(t)}
+                className={`flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm ${
+                  i === active ? 'bg-cyan-400/15 text-cyan-100' : 'text-nc-text hover:bg-white/5'
+                }`}
+              >
+                <span className="truncate font-medium">{t.short ?? t.name}</span>
+                <span className="shrink-0 text-[10px] uppercase tracking-wider text-nc-muted">
+                  {t.kind}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {open && q.length > 0 && results.length === 0 && (
+        <div className="absolute bottom-[calc(100%+0.4rem)] left-0 right-0 rounded-xl border border-nc-border/70 bg-[#061018]/95 px-3 py-2 text-xs text-nc-muted backdrop-blur-md">
+          No buildings match “{query.trim()}”
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function TorontoCityViewer({
   mode = 'explore',
   onZoomComplete,
@@ -821,7 +954,10 @@ export default function TorontoCityViewer({
   const [labeled, setLabeled] = useState(0);
   const [electricity, setElectricity] = useState<BuildingElectricity | null>(null);
   const [cityReady, setCityReady] = useState(false);
+  const [searchTargets, setSearchTargets] = useState<SearchTarget[]>([]);
   const selectRef = useRef<(pick: BuildingPick | null) => void>(() => {});
+  const flyToRef = useRef<(target: SearchTarget) => void>(() => {});
+  const unlockFlyRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     modeRef.current = mode;
@@ -877,6 +1013,14 @@ export default function TorontoCityViewer({
     let zoomFromLook = new Vector3();
     let lastMode: CityViewMode = modeRef.current;
 
+    let searchFly: {
+      fromPos: Vector3;
+      fromLook: Vector3;
+      toPos: Vector3;
+      toLook: Vector3;
+      start: number;
+    } | null = null;
+
     const scene = new Scene();
     scene.background = new Color('#02060d');
     scene.fog = new Fog('#02060d', 500, 2600);
@@ -918,8 +1062,16 @@ export default function TorontoCityViewer({
       const action = KEY_MAP[code];
       if (action) MOVE[action] = down;
     };
+    const typingInField = () => {
+      const el = document.activeElement as HTMLElement | null;
+      if (!el) return false;
+      const tag = el.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable;
+    };
+
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.code === 'Escape') return;
+      if (typingInField()) return;
       if (e.code === 'KeyF' && controls?.isLocked) {
         // Inspect whatever is under the reticle
         pickAtCenter();
@@ -927,7 +1079,10 @@ export default function TorontoCityViewer({
       }
       setKey(e.code, true);
     };
-    const onKeyUp = (e: KeyboardEvent) => setKey(e.code, false);
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (typingInField()) return;
+      setKey(e.code, false);
+    };
 
     const showHighlight = (pick: BuildingPick) => {
       if (highlight) {
@@ -973,12 +1128,57 @@ export default function TorontoCityViewer({
     const onClick = () => {
       if (!ready || !controls) return;
       if (modeRef.current !== 'explore') return;
+      if (typingInField()) return;
       if (!controls.isLocked) {
         controls.lock();
         return;
       }
       // While flying: click = inspect building under crosshair
       pickAtCenter();
+    };
+
+    unlockFlyRef.current = () => {
+      if (controls?.isLocked) controls.unlock();
+      Object.keys(MOVE).forEach((k) => {
+        MOVE[k as KeyAction] = false;
+      });
+    };
+
+    flyToRef.current = (target: SearchTarget) => {
+      if (!ready || modeRef.current !== 'explore') return;
+      unlockFlyRef.current();
+      zoomActive = false;
+
+      // Frame near the nameplate (typically ~h+22), not a wide skyline pullback.
+      const plateY = target.h + 22;
+      const lookY = Math.max(18, plateY);
+      const dist = Math.max(36, Math.min(95, target.h * 0.22 + 42));
+      const toPos = new Vector3(
+        target.x + dist * 0.65,
+        Math.max(28, plateY + dist * 0.12),
+        target.z + dist * 0.78,
+      );
+      const toLook = new Vector3(target.x, lookY, target.z);
+      searchFly = {
+        fromPos: camera.position.clone(),
+        fromLook: camera.getWorldDirection(new Vector3()).multiplyScalar(280).add(camera.position),
+        toPos,
+        toLook,
+        start: performance.now(),
+      };
+
+      const pick: BuildingPick = {
+        buildingIndex: -2,
+        name: target.short ?? target.name,
+        kind: target.kind,
+        h: target.h,
+        footprint_m2: target.footprint_m2,
+        x: target.x,
+        z: target.z,
+        data_source: 'massing-cache',
+      };
+      selectRef.current(pick);
+      showHighlight(pick);
     };
 
     const beginZoom = () => {
@@ -1021,7 +1221,14 @@ export default function TorontoCityViewer({
 
       if (viewMode !== 'explore' && controls.isLocked) controls.unlock();
 
-      if (viewMode === 'preview' && ready && !zoomActive) {
+      if (searchFly && viewMode === 'explore') {
+        const u = Math.min(1, (now - searchFly.start) / SEARCH_FLY_MS);
+        const e = easeInOutCubic(u);
+        camera.position.lerpVectors(searchFly.fromPos, searchFly.toPos, e);
+        const look = new Vector3().lerpVectors(searchFly.fromLook, searchFly.toLook, e);
+        camera.lookAt(look);
+        if (u >= 1) searchFly = null;
+      } else if (viewMode === 'preview' && ready && !zoomActive) {
         const t = now * 0.00012;
         const radius = 780;
         camera.position.set(
@@ -1047,7 +1254,7 @@ export default function TorontoCityViewer({
           camera.lookAt(EXPLORE_LOOK);
           onZoomCompleteRef.current?.();
         }
-      } else if (viewMode === 'explore' && controls.isLocked) {
+      } else if (viewMode === 'explore' && controls.isLocked && !searchFly) {
         const base = MOVE.sprint ? 180 : 70;
         const accel = base * 8;
 
@@ -1083,7 +1290,8 @@ export default function TorontoCityViewer({
         }
         const anchor = sign.userData.anchor as { x: number; y: number; z: number };
         const dist = camera.position.distanceTo(sign.position);
-        const visible = dist < SIGN_VISIBLE_M;
+        const maxVisible = (sign.userData.maxVisible as number | undefined) ?? SIGN_VISIBLE_M;
+        const visible = dist < maxVisible;
         sign.visible = visible;
         if (!visible) continue;
         const base = sign.userData.baseScale as { x: number; y: number };
@@ -1123,6 +1331,18 @@ export default function TorontoCityViewer({
         city.add(buildCnTower(cn?.x ?? 0, cn?.z ?? 0));
         scene.add(city);
         setLabeled(matches.length);
+        setSearchTargets(
+          matches.map((m) => ({
+            id: m.landmark.id,
+            name: m.landmark.name,
+            short: m.landmark.short,
+            kind: m.landmark.kind ?? 'structure',
+            x: m.x,
+            z: m.z,
+            h: m.h,
+            footprint_m2: m.footprint_m2,
+          })),
+        );
         ready = true;
         setCityReady(true);
         setStatus('');
@@ -1231,17 +1451,17 @@ export default function TorontoCityViewer({
       {exploreUi && cityReady && !locked && !error && !status && (
         <button
           type="button"
-          className="absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-nc-border/80 bg-nc-panel/85 px-8 py-6 text-center shadow-xl shadow-black/50 backdrop-blur-md transition hover:border-nc-renew"
+          className="absolute left-1/2 top-20 z-10 -translate-x-1/2 rounded-2xl border border-nc-border/80 bg-nc-panel/85 px-8 py-5 text-center shadow-xl shadow-black/50 backdrop-blur-md transition hover:border-nc-renew sm:top-24"
           onClick={() => {
             const canvas = mountRef.current?.querySelector('canvas');
             canvas?.click();
           }}
         >
-          <div className="text-2xl font-semibold">Click to fly</div>
+          <div className="text-xl font-semibold sm:text-2xl">Click to fly</div>
           <div className="mt-2 text-xs text-nc-muted">
             WASD move · Space up · C down · Shift sprint · Esc release
           </div>
-          <div className="mt-3 text-[11px] text-nc-renew/90">
+          <div className="mt-2 text-[11px] text-nc-renew/90">
             Aim at a building and click (or press F) for electricity data
           </div>
         </button>
@@ -1256,15 +1476,26 @@ export default function TorontoCityViewer({
 
       {exploreUi && (
         <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex items-end justify-between gap-4 p-3">
-          <a
-            href="https://open.toronto.ca/dataset/3d-massing/"
-            target="_blank"
-            rel="noreferrer"
-            className="pointer-events-auto text-[11px] text-nc-muted underline-offset-2 hover:text-nc-text hover:underline"
-          >
-            open.toronto.ca/dataset/3d-massing
-          </a>
-          <p className="max-w-[70%] text-right text-[10px] leading-snug text-nc-muted/90">{credit}</p>
+          <div className="flex flex-col gap-2">
+            {cityReady && searchTargets.length > 0 && (
+              <BuildingSearch
+                targets={searchTargets}
+                onActivate={() => unlockFlyRef.current()}
+                onSelect={(target) => {
+                  flyToRef.current(target);
+                }}
+              />
+            )}
+            <a
+              href="https://open.toronto.ca/dataset/3d-massing/"
+              target="_blank"
+              rel="noreferrer"
+              className="pointer-events-auto text-[11px] text-nc-muted underline-offset-2 hover:text-nc-text hover:underline"
+            >
+              open.toronto.ca/dataset/3d-massing
+            </a>
+          </div>
+          <p className="max-w-[50%] text-right text-[10px] leading-snug text-nc-muted/90">{credit}</p>
         </div>
       )}
     </div>

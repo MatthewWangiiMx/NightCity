@@ -12,7 +12,7 @@ const KIND_LABEL: Record<Asset['kind'], string> = {
 };
 
 /** Live output for an asset at the scrubbed step, from the deterministic series. */
-function outputAt(asset: Asset, step?: TimeStep): number | null {
+function outputAt(asset: Asset, step?: TimeStep, district?: District): number | null {
   if (!step) return null;
   switch (asset.kind) {
     case 'solar':
@@ -21,8 +21,12 @@ function outputAt(asset: Asset, step?: TimeStep): number | null {
       return step.wind_mw;
     case 'battery':
       return step.battery_mw;
-    case 'building':
-      return step.demand_mw;
+    case 'building': {
+      // District demand is the sum of real buildings — allocate by rated capacity share.
+      const buildings = (district?.assets ?? []).filter((a) => a.kind === 'building');
+      const totalCap = buildings.reduce((s, a) => s + a.capacity_mw, 0) || 1;
+      return step.demand_mw * (asset.capacity_mw / totalCap);
+    }
     case 'grid_tie':
       return step.grid_import_mw;
     default:
@@ -62,7 +66,7 @@ export default function AssetInspector({
     );
   }
 
-  const output = outputAt(asset, step);
+  const output = outputAt(asset, step, district);
   const utilization = output !== null ? Math.round((Math.abs(output) / asset.capacity_mw) * 100) : null;
   const inbound = district.flows.filter((f) => f.to_asset === asset.id);
   const outbound = district.flows.filter((f) => f.from_asset === asset.id);

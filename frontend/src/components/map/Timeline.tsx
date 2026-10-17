@@ -1,8 +1,6 @@
-import { EVENT_LABEL, EVENT_STEP, EVENT_TIME, TIME_LABELS } from '@/demo/fixtures';
-
 /**
- * Playback scrubber under the map. The track is split at the disruption:
- * amber before it, green after, with the event called out above the marker.
+ * Playback scrubber under the map. Labels come from the live/demo step series
+ * so TigerData windows are not forced onto the hardcoded 16:00–21:00 demo grid.
  */
 export default function Timeline({
   step,
@@ -10,15 +8,31 @@ export default function Timeline({
   playing,
   onTogglePlay,
   onScrub,
+  labels = [],
+  eventLabel,
+  eventIndex,
 }: {
   step: number;
   total: number;
   playing: boolean;
   onTogglePlay: () => void;
   onScrub: (step: number) => void;
+  labels?: string[];
+  eventLabel?: string | null;
+  eventIndex?: number | null;
 }) {
-  const eventPct = total > 1 ? (EVENT_STEP / (total - 1)) * 100 : 50;
-  const ticks = [0, 4, 8, 12, 16, 20].filter((i) => i < total);
+  const eventStep =
+    eventIndex != null && eventIndex >= 0 && eventIndex < total
+      ? eventIndex
+      : Math.floor((total - 1) * 0.55);
+  const eventPct = total > 1 ? (eventStep / (total - 1)) * 100 : 50;
+  const tickCount = Math.min(6, Math.max(total, 1));
+  const ticks = Array.from({ length: tickCount }, (_, i) =>
+    total <= 1 ? 0 : Math.round((i * (total - 1)) / (tickCount - 1)),
+  );
+
+  const labelAt = (i: number) => labels[i] ?? '—';
+  const eventText = eventLabel?.trim() || null;
 
   return (
     <div className="rounded-xl border border-nc-border/80 bg-nc-panel/75 px-4 pb-3 pt-2 backdrop-blur-md">
@@ -33,25 +47,30 @@ export default function Timeline({
         </button>
 
         <div className="relative flex-1 pt-6">
-          {/* Event callout, pinned over the marker */}
-          <span
-            className="absolute top-0 -translate-x-1/2 whitespace-nowrap rounded bg-nc-alert/15 px-2 py-0.5 text-[11px] text-nc-alert"
-            style={{ left: `${eventPct}%` }}
-          >
-            {EVENT_TIME} {EVENT_LABEL}
-          </span>
+          {eventText && (
+            <span
+              className="absolute top-0 -translate-x-1/2 whitespace-nowrap rounded bg-nc-alert/15 px-2 py-0.5 text-[11px] text-nc-alert"
+              style={{ left: `${eventPct}%` }}
+            >
+              {eventText}
+            </span>
+          )}
 
           <div className="relative">
             <div
               className="pointer-events-none absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full"
               style={{
-                background: `linear-gradient(90deg, var(--color-nc-flex) 0%, var(--color-nc-flex) ${eventPct}%, var(--color-nc-renew) ${eventPct}%, var(--color-nc-renew) 100%)`,
+                background: eventText
+                  ? `linear-gradient(90deg, var(--color-nc-flex) 0%, var(--color-nc-flex) ${eventPct}%, var(--color-nc-renew) ${eventPct}%, var(--color-nc-renew) 100%)`
+                  : 'var(--color-nc-renew)',
               }}
             />
-            <div
-              className="pointer-events-none absolute top-1/2 h-5 w-0.5 -translate-y-1/2 bg-nc-alert"
-              style={{ left: `${eventPct}%` }}
-            />
+            {eventText && (
+              <div
+                className="pointer-events-none absolute top-1/2 h-5 w-0.5 -translate-y-1/2 bg-nc-alert"
+                style={{ left: `${eventPct}%` }}
+              />
+            )}
             <input
               type="range"
               min={0}
@@ -66,18 +85,18 @@ export default function Timeline({
           <div className="relative mt-1 h-4 text-[10px] text-nc-muted">
             {ticks.map((i) => (
               <span
-                key={i}
+                key={`${i}-${labelAt(i)}`}
                 className="absolute -translate-x-1/2"
-                style={{ left: `${(i / (total - 1)) * 100}%` }}
+                style={{ left: `${total > 1 ? (i / (total - 1)) * 100 : 0}%` }}
               >
-                {TIME_LABELS[i]}
+                {labelAt(i)}
               </span>
             ))}
           </div>
         </div>
 
         <span className="w-16 shrink-0 text-right text-sm tabular-nums text-nc-text">
-          {TIME_LABELS[step] ?? '—'}
+          {labelAt(step)}
         </span>
       </div>
     </div>

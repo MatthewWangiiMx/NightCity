@@ -50,11 +50,17 @@ The Explore City viewer prefers TigerData; if the API is empty it falls back to
 ```
 
 With `USE_DATABASE=true`, fetch and store three days of hourly weather for the default Toronto
-coordinates:
+coordinates. The Simulate page reads weather from `GET /api/weather/observations` and
+timesteps from `GET /api/simulation/live` (TigerData `telemetry` / `runs`).
 
 ```powershell
 Invoke-RestMethod -Method Post http://localhost:8000/api/weather/ingest `
   -ContentType "application/json" -Body '{}'
+
+# Import grid timesteps (CSV), then confirm the live window:
+# python scripts/import_telemetry.py data/readings.csv --run import-2026-10-16
+Invoke-RestMethod http://localhost:8000/api/simulation/live
+Invoke-RestMethod http://localhost:8000/api/weather/observations
 ```
 
 You can provide any Open-Meteo-supported coordinate, plus up to 16 forecast days and 92 past

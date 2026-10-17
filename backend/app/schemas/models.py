@@ -4,13 +4,15 @@ Skeleton: fields are the shape we intend to send; values are produced by the
 deterministic simulator, never by the LLM.
 """
 
+from __future__ import annotations
+
 from datetime import datetime
-from enum import StrEnum
+from enum import Enum
 
 from pydantic import BaseModel, Field
 
 
-class AssetKind(StrEnum):
+class AssetKind(str, Enum):
     SOLAR = "solar"
     WIND = "wind"
     BATTERY = "battery"
@@ -19,7 +21,7 @@ class AssetKind(StrEnum):
     GRID_TIE = "grid_tie"
 
 
-class ScenarioKind(StrEnum):
+class ScenarioKind(str, Enum):
     SOLAR_DROP = "solar_drop"
     HEAT_WAVE = "heat_wave"
     EV_SURGE = "ev_surge"
@@ -28,7 +30,7 @@ class ScenarioKind(StrEnum):
     BASELINE = "baseline"
 
 
-class ActionKind(StrEnum):
+class ActionKind(str, Enum):
     BATTERY_DISCHARGE = "battery_discharge"
     SHIFT_EV_CHARGING = "shift_ev_charging"
     PRECOOL_BUILDING = "precool_building"
@@ -73,6 +75,9 @@ class TimeStep(BaseModel):
     battery_soc: float         # 0..1
     grid_import_mw: float
     indoor_temp_c: float | None = None
+    # When set, this row is a single TigerData / massing building.
+    # District aggregates leave this null; demand_mw is then the sum of buildings.
+    building_id: str | None = None
 
 
 class GridStatus(BaseModel):
@@ -131,6 +136,9 @@ class RunResult(BaseModel):
     actions: list[DispatchAction]
     explanation: str | None = None     # LLM text, optional and non-authoritative
     is_simulated: bool = True          # always true: this is a digital twin
+    # TigerData weather window aligned to the run (may be empty).
+    weather: list[WeatherObservation] = Field(default_factory=list)
+    source: str = "demo"  # demo | tigerdata-run | tigerdata-telemetry
 
 
 class WeatherRequest(BaseModel):

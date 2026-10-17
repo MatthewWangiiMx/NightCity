@@ -157,7 +157,9 @@ function ringArea(ring: [number, number][]) {
   return Math.abs(a * 0.5);
 }
 
-/** Greedy nearest-neighbour match with height gates; each footprint used at most once. */
+/** Greedy nearest-neighbour match with height gates; each footprint used at most once.
+ *  Only real named landmarks get plates — Toronto 3D Massing has no per-building names.
+ */
 export function matchLandmarksToBuildings(
   buildings: { h: number; rings: [number, number][][] }[],
   maxDistM = 110,
@@ -222,34 +224,6 @@ export function matchLandmarksToBuildings(
       footprint_m2: best.footprint_m2,
     });
   }
-
-  // Extra nameplates for unmatched very tall towers so the skyline stays labeled.
-  const tallUnmatched = refs
-    .filter((r) => !used.has(r.index) && r.h >= 160)
-    .sort((a, b) => b.h - a.h)
-    .slice(0, 35);
-
-  tallUnmatched.forEach((ref, i) => {
-    used.add(ref.index);
-    const district =
-      ref.z > 80 ? 'Harbourfront' : ref.z < -500 ? 'Uptown Core' : ref.x > 400 ? 'East Bayfront' : 'Financial District';
-    matches.push({
-      landmark: {
-        id: `tall-${ref.index}`,
-        name: `${district} Tower`,
-        short: `${district.split(' ')[0]} ${Math.round(ref.h)}m`,
-        lat: 0,
-        lon: 0,
-        kind: ref.h >= 200 ? 'tower' : 'office',
-      },
-      buildingIndex: ref.index,
-      x: ref.x,
-      z: ref.z,
-      h: ref.h,
-      footprint_m2: ref.footprint_m2,
-    });
-    void i;
-  });
 
   return matches;
 }

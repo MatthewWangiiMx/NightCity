@@ -1,4 +1,12 @@
-import type { District, DispatchAction, RunRequest, RunResult, Scenario, TimeStep } from './types';
+import type {
+  District,
+  DispatchAction,
+  RunRequest,
+  RunResult,
+  Scenario,
+  TimeStep,
+  WeatherObservation,
+} from './types';
 
 const BASE = '/api';
 
@@ -39,9 +47,16 @@ export const api = {
   scenarios: () => request<Scenario[]>('/scenarios'),
   run: (body: RunRequest) =>
     request<RunResult>('/simulation/run', { method: 'POST', body: JSON.stringify(body) }),
+  /** Latest TigerData telemetry + weather window. */
+  liveRun: (districtId = 'nightcity') =>
+    request<RunResult>(`/simulation/live?district_id=${encodeURIComponent(districtId)}`),
   playback: (runId: string, variant: 'baseline' | 'optimized' = 'optimized') =>
     request<TimeStep[]>(`/simulation/runs/${runId}/playback?variant=${variant}`),
+  telemetry: (districtId = 'nightcity', limit = 500) =>
+    request<TimeStep[]>(`/simulation/telemetry/${encodeURIComponent(districtId)}?limit=${limit}`),
   dispatch: (runId: string) => request<DispatchAction[]>(`/dispatch/${runId}`),
+  weather: (limit = 168) =>
+    request<WeatherObservation[]>(`/weather/observations?limit=${limit}`),
   /** Live TigerData massing; throws if DB empty / disabled. */
   buildingsMassing: () => request<MassingData>('/buildings/massing'),
   building: (id: number) => request<Record<string, unknown>>(`/buildings/${id}`),

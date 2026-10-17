@@ -226,6 +226,8 @@ export function demoRun(scenario: ScenarioKind = 'solar_drop'): RunResult {
     actions: ACTIONS,
     explanation: null,
     is_simulated: true,
+    weather: [],
+    source: 'demo',
   };
 }
 

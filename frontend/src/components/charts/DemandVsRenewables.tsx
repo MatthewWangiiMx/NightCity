@@ -10,7 +10,7 @@ import {
   YAxis,
 } from 'recharts';
 import type { TimeStep } from '@/api/types';
-import { AXIS, ChartTooltip, SERIES, eventMarker, toRows } from './chartParts';
+import { AXIS, ChartTooltip, SERIES, eventMarkerFor, toRows } from './chartParts';
 
 /** Change over time, three measures on one MW axis. */
 export default function DemandVsRenewables({
@@ -21,6 +21,7 @@ export default function DemandVsRenewables({
   height?: number;
 }) {
   const rows = toRows(steps);
+  const marker = eventMarkerFor(rows);
 
   return (
     <ResponsiveContainer width="100%" height={height}>
@@ -41,12 +42,14 @@ export default function DemandVsRenewables({
           iconType="plainline"
           wrapperStyle={{ fontSize: 11, color: '#7fa6b6' }}
         />
-        <ReferenceLine
-          x={eventMarker.x}
-          stroke="var(--color-nc-alert)"
-          strokeDasharray="4 4"
-          label={{ value: eventMarker.label, fill: '#f05252', fontSize: 10, position: 'top', dy: -4 }}
-        />
+        {marker && (
+          <ReferenceLine
+            x={marker.x}
+            stroke="var(--color-nc-alert)"
+            strokeDasharray="4 4"
+            label={{ value: marker.label, fill: '#f05252', fontSize: 10, position: 'top', dy: -4 }}
+          />
+        )}
         <Line
           type="monotone"
           dataKey="demand"

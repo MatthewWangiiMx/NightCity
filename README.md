@@ -1,6 +1,6 @@
 # NightCity
 
-GridShift × WattWise — a **simulated** energy grid digital twin. Trigger a disruption
+A **simulated** energy grid digital twin. Trigger a disruption
 (solar drop, heat wave, EV surge, battery outage, storm) and watch a transparent optimizer
 coordinate buildings, batteries, EV charging and renewables, with the trade-offs shown live.
 

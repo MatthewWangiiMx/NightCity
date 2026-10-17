@@ -23,6 +23,13 @@ export function lonLatToLocal(lon: number, lat: number) {
   return { x, z };
 }
 
+/** Inverse of `lonLatToLocal`, so a picked building can name its postal FSA. */
+export function localToLonLat(x: number, z: number) {
+  const lon = x / (Math.cos((ORIGIN.lat * Math.PI) / 180) * 111_320) + ORIGIN.lon;
+  const lat = -z / 110_540 + ORIGIN.lat;
+  return { lon, lat };
+}
+
 export const TORONTO_LANDMARKS: TorontoLandmark[] = [
   // Waterfront / Raildeck
   { id: 'cn-tower', name: 'CN Tower', lat: 43.6426, lon: -79.3871, minH: 400, kind: 'landmark' },

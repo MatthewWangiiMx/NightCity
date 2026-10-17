@@ -2,6 +2,7 @@ import { useState } from 'react';
 import Panel from '@/components/Panel';
 import GridLoadProfile from '@/components/charts/GridLoadProfile';
 import EnergyMixDonut from '@/components/charts/EnergyMixDonut';
+import EfficiencyHeadroomPanel from '@/components/panels/EfficiencyHeadroomPanel';
 import { useRun } from '@/hooks/useRun';
 import { ENERGY_MIX } from '@/demo/fixtures';
 
@@ -237,6 +238,9 @@ export default function Plan() {
           {applied ? 'Plan applied ✓' : 'Apply plan'}
         </button>
       </Panel>
+
+      {/* Unlike the sliders above, this target comes from reported practice. */}
+      <EfficiencyHeadroomPanel className="xl:col-span-2" />
     </div>
   );
 }

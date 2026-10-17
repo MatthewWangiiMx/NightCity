@@ -112,3 +112,240 @@ export interface RunResult {
   weather?: WeatherObservation[];
   source?: 'demo' | 'tigerdata-run' | 'tigerdata-telemetry' | string;
 }
+
+// --- Ontario EWRB reported benchmarks -------------------------------------
+// Mirrors backend/app/data/ewrb.py and backend/app/sim/ewrb_profile.py.
+// Reported (measured) fields are grouped under `intensity`; anything under
+// `demand` is modelled from declared assumptions. See `provenance`.
+
+export interface EwrbSource {
+  dataset: string;
+  publisher: string;
+  license: string;
+  url: string;
+  note: string;
+}
+
+/** Distribution of one reported metric across a cohort. */
+export interface EwrbDistribution {
+  n: number;
+  min: number;
+  p05: number;
+  p25: number;
+  median: number;
+  p75: number;
+  p95: number;
+  max: number;
+  mean: number;
+  /** Filings outside the metric's physical range, excluded from the stats. */
+  excluded: number;
+}
+
+export type EwrbMetricKey =
+  | 'elec_kwh_m2'
+  | 'gas_kwh_m2'
+  | 'site_eui_kwh_m2'
+  | 'source_eui_kwh_m2'
+  | 'ghg_kg_m2'
+  | 'water_m3_m2'
+  | 'energy_star_score';
+
+/** How wide a net the cohort was drawn from. */
+export type EwrbBasis = 'fsa' | 'city' | 'province' | 'province-thin';
+
+export interface EwrbCohort {
+  property_type: string;
+  scope: string;
+  basis: EwrbBasis;
+  sample_size: number;
+  metrics: Partial<Record<EwrbMetricKey, EwrbDistribution>>;
+  energy_star_certified: number;
+  data_quality_checked: number;
+}
+
+export interface EwrbBenchmarks {
+  source: EwrbSource;
+  city: string | null;
+  fsa: string | null;
+  kind_map: Record<string, string[]>;
+  cohorts: Record<string, EwrbCohort>;
+}
+
+/** Reported intensities, as filed with the province. */
+export interface EwrbIntensity {
+  elec_kwh_m2: number | null;
+  gas_kwh_m2: number | null;
+  site_eui_kwh_m2: number | null;
+  source_eui_kwh_m2: number | null;
+  ghg_kg_m2: number | null;
+  water_m3_m2: number | null;
+  energy_star_score: number | null;
+  electrification_pct: number | null;
+}
+
+/** Annual totals: reported intensity x this building's floor area. */
+export interface EwrbAnnual {
+  elec_mwh: number;
+  gas_mwh: number;
+  site_energy_mwh: number;
+  emissions_tco2e: number;
+  water_m3: number;
+}
+
+/** Modelled electrical shape. EWRB reports annual totals only. */
+export interface EwrbDemand {
+  avg_kw: number;
+  peak_kw: number;
+  demand_kw: number;
+  at_hour: number;
+  load_factor_pct: number;
+  flexible_kw: number;
+  shape: 'residential' | 'commercial' | 'continuous';
+  curve_kw: number[];
+  hvac_share_pct: number;
+  lighting_share_pct: number;
+  plug_share_pct: number;
+}
+
+export interface EwrbBenchmarkPosition {
+  scope: string;
+  basis: EwrbBasis;
+  sample_size: number;
+  ranked_sample: number;
+  assigned_percentile: number;
+  site_eui_percentile: number | null;
+  ghg_percentile: number | null;
+  cohort_median_site_eui: number | null;
+  cohort_p25_site_eui: number | null;
+  cohort_p75_site_eui: number | null;
+  /** p05 / p95 of the cohort, so one extreme cannot squash the strip. */
+  cohort_min_site_eui: number | null;
+  cohort_max_site_eui: number | null;
+  cohort_excluded_filings: number;
+  comparable_ewrb_id: string | null;
+  comparable_certification: string | null;
+  data_quality_checked: boolean;
+}
+
+export interface EwrbProvenance {
+  measured: string;
+  modelled: string;
+  caveat: string;
+}
+
+export interface EwrbBuildingProfile {
+  source?: EwrbSource;
+  building_id: string;
+  name: string;
+  kind: string | null;
+  property_type: string;
+  fsa: string | null;
+  city: string;
+  footprint_m2: number;
+  levels: number;
+  floors_estimated: boolean;
+  height_m: number | null;
+  gross_floor_area_m2: number;
+  intensity: EwrbIntensity;
+  annual: EwrbAnnual;
+  demand: EwrbDemand;
+  benchmark: EwrbBenchmarkPosition;
+  provenance: EwrbProvenance;
+}
+
+/** One reported property, as published. */
+export interface EwrbRecord {
+  ewrb_id: string | null;
+  city: string | null;
+  fsa: string | null;
+  property_type: string | null;
+  self_reported_type: string | null;
+  largest_type: string | null;
+  all_types: string | null;
+  certification: string | null;
+  elec_kwh_m2: number | null;
+  gas_kwh_m2: number | null;
+  gas_m3_ft2: number | null;
+  site_eui_kwh_m2: number | null;
+  source_eui_kwh_m2: number | null;
+  wn_site_eui_kwh_m2: number | null;
+  wn_source_eui_kwh_m2: number | null;
+  ghg_kg_m2: number | null;
+  water_m3_m2: number | null;
+  indoor_water_m3_m2: number | null;
+  energy_star_score: number | null;
+  energy_star_certified: string | null;
+  data_quality_checked: boolean;
+  data_quality_date: string | null;
+  electrification_pct: number | null;
+}
+
+export interface EwrbRecordPage {
+  source: EwrbSource;
+  total: number;
+  limit: number;
+  offset: number;
+  records: EwrbRecord[];
+}
+
+export interface EwrbCitySummary extends EwrbCohort {
+  city: string;
+  property_type_mix: { property_type: string; count: number }[];
+}
+
+export interface EwrbFsaArea {
+  fsa: string;
+  sample_size: number;
+  site_eui_kwh_m2: number | null;
+  ghg_kg_m2: number | null;
+}
+
+/** District rollup for the Simulate and Plan pages. */
+export interface EwrbDistrictRollup {
+  source: EwrbSource;
+  city: string;
+  skipped: number;
+  peak_hour: number | null;
+  buildings: number;
+  gross_floor_area_m2: number;
+  annual: EwrbAnnual;
+  demand: {
+    peak_mw: number;
+    non_coincident_peak_mw: number;
+    diversity_factor: number | null;
+    avg_mw: number;
+    flexible_mw: number;
+    curve_mw: number[];
+  };
+  intensity: {
+    mean_site_eui_kwh_m2: number | null;
+    area_weighted_ghg_kg_m2: number | null;
+    mean_energy_star_score: number | null;
+    scored_buildings: number;
+  };
+  retrofit: {
+    target: string;
+    buildings_above_target: number;
+    annual_saving_mwh: number;
+    annual_saving_tco2e: number;
+    top_candidates: {
+      building_id: string;
+      name: string;
+      property_type: string;
+      current_site_eui_kwh_m2: number;
+      target_site_eui_kwh_m2: number;
+      saving_mwh: number;
+      saving_tco2e: number;
+    }[];
+    assumption: string;
+  };
+}
+
+export interface EwrbMeta {
+  source: EwrbSource;
+  rows: number;
+  cities: { city: string; count: number }[];
+  property_types: { property_type: string; sample_size: number }[];
+  metrics: Record<string, string>;
+  min_cohort_size: number;
+}

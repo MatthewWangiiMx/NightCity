@@ -6,6 +6,7 @@ import DispatchPlanPanel from '@/components/panels/DispatchPlanPanel';
 import ScenarioComparison from '@/components/panels/ScenarioComparison';
 import EmissionsAvoided from '@/components/panels/EmissionsAvoided';
 import ComfortConstraints from '@/components/panels/ComfortConstraints';
+import ReportedStockPanel from '@/components/panels/ReportedStockPanel';
 import GridLoadProfile from '@/components/charts/GridLoadProfile';
 import EventDialog from '@/components/EventDialog';
 import { usePlayback } from '@/hooks/usePlayback';
@@ -131,6 +132,9 @@ export default function Simulate() {
         />
         <ComfortConstraints metrics={result.optimized_metrics} />
       </div>
+
+      {/* The one measured reference on this page: what the real stock reports. */}
+      <ReportedStockPanel />
 
       <EventDialog
         open={dialogOpen}

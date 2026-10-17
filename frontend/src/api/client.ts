@@ -1,6 +1,14 @@
 import type {
   District,
   DispatchAction,
+  EwrbBenchmarks,
+  EwrbBuildingProfile,
+  EwrbCitySummary,
+  EwrbDistrictRollup,
+  EwrbFsaArea,
+  EwrbMeta,
+  EwrbRecordPage,
+  EwrbSource,
   RunRequest,
   RunResult,
   Scenario,
@@ -60,4 +68,81 @@ export const api = {
   /** Live TigerData massing; throws if DB empty / disabled. */
   buildingsMassing: () => request<MassingData>('/buildings/massing'),
   building: (id: number) => request<Record<string, unknown>>(`/buildings/${id}`),
+
+  // --- Ontario EWRB reported benchmarks ---
+  // The one measured layer in the app. See backend/app/data/ewrb.py.
+  ewrbMeta: () => request<EwrbMeta>('/ewrb/meta'),
+  /** Cohort table: one entry per property type, fetched once and reused. */
+  ewrbBenchmarks: (city = 'Toronto', fsa?: string) =>
+    request<EwrbBenchmarks>(
+      `/ewrb/benchmarks?city=${encodeURIComponent(city)}${fsa ? `&fsa=${encodeURIComponent(fsa)}` : ''}`,
+    ),
+  ewrbSummary: (city = 'Toronto') =>
+    request<EwrbCitySummary>(`/ewrb/summary?city=${encodeURIComponent(city)}`),
+  ewrbFsaAreas: (city = 'Toronto') =>
+    request<{ source: EwrbSource; city: string; areas: EwrbFsaArea[] }>(
+      `/ewrb/fsa?city=${encodeURIComponent(city)}`,
+    ),
+  ewrbRecords: (params: {
+    city?: string;
+    fsa?: string;
+    propertyType?: string;
+    limit?: number;
+    offset?: number;
+  } = {}) => {
+    const q = new URLSearchParams();
+    if (params.city) q.set('city', params.city);
+    if (params.fsa) q.set('fsa', params.fsa);
+    if (params.propertyType) q.set('property_type', params.propertyType);
+    q.set('limit', String(params.limit ?? 200));
+    q.set('offset', String(params.offset ?? 0));
+    return request<EwrbRecordPage>(`/ewrb/records?${q.toString()}`);
+  },
+  /** EWRB-grounded profile for a building the viewer already has geometry for. */
+  ewrbProfile: (building: {
+    id: string;
+    footprint_m2: number;
+    name?: string;
+    kind?: string | null;
+    height_m?: number | null;
+    levels?: number | null;
+    lat?: number | null;
+    lon?: number | null;
+    fsa?: string | null;
+    hour?: number | null;
+  }) => {
+    const q = new URLSearchParams({
+      building_id: building.id,
+      footprint_m2: String(Math.max(1, Math.round(building.footprint_m2))),
+    });
+    if (building.name) q.set('name', building.name);
+    if (building.kind) q.set('kind', building.kind);
+    if (building.height_m != null) q.set('height_m', String(building.height_m));
+    if (building.levels != null) q.set('levels', String(building.levels));
+    if (building.lat != null) q.set('lat', String(building.lat));
+    if (building.lon != null) q.set('lon', String(building.lon));
+    if (building.fsa) q.set('fsa', building.fsa);
+    if (building.hour != null) q.set('hour', String(building.hour));
+    return request<EwrbBuildingProfile>(`/ewrb/profile?${q.toString()}`);
+  },
+  /** District rollup over the stock in TigerData; 503 when the DB is off. */
+  ewrbLiveDistrict: (city = 'Toronto') =>
+    request<EwrbDistrictRollup>(`/ewrb/district/live?city=${encodeURIComponent(city)}`),
+  /** Roll the massing on screen up into district totals. */
+  ewrbDistrict: (
+    buildings: {
+      id: string;
+      footprint_m2: number;
+      kind?: string | null;
+      h?: number | null;
+      levels?: number | null;
+      lat?: number | null;
+      lon?: number | null;
+    }[],
+    city = 'Toronto',
+  ) =>
+    request<EwrbDistrictRollup>(`/ewrb/district?city=${encodeURIComponent(city)}`, {
+      method: 'POST',
+      body: JSON.stringify(buildings),
+    }),
 };

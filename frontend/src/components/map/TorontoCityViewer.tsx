@@ -766,11 +766,7 @@ function ElectricityPanel({
       </div>
 
       <div className="mt-4 grid grid-cols-2 gap-2 text-sm">
-        <Metric label="Avg height" value={`${(data.construction.avg_h ?? data.height_m).toLocaleString()} m`} accent />
-        <Metric
-          label="Max height"
-          value={data.construction.max_h != null ? `${data.construction.max_h.toLocaleString()} m` : '—'}
-        />
+        <Metric label="Height" value={`${(data.construction.avg_h ?? data.height_m).toLocaleString()} m`} accent />
         <Metric label="Footprint" value={`${data.footprint_m2.toLocaleString()} m²`} />
         <Metric
           label="Levels"

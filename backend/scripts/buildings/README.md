@@ -4,9 +4,17 @@ Put **unzipped** building data in `data/`, then run the importer from `backend/`
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-python scripts/buildings/import_builds.py --dry-run   # look first
-python scripts/buildings/import_builds.py             # write to TigerData
+# Downtown Toronto 3D Massing (already downloaded under tmp/massing):
+python scripts/buildings/import_builds.py `
+  ..\tmp\massing\extracted\3DMassingShapefile_2025_WGS84.shp `
+  --bbox -79.41,43.63,-79.36,43.66 `
+  --dry-run
+python scripts/buildings/import_builds.py `
+  ..\tmp\massing\extracted\3DMassingShapefile_2025_WGS84.shp `
+  --bbox -79.41,43.63,-79.36,43.66
 ```
+
+Requires `USE_DATABASE=true` and a real `TIGERDATA_URL` in `backend/.env`.
 
 Readable formats: `.shp` (keep its `.dbf`/`.shx`/`.prj` sidecars beside it),
 `.geojson`, `.json`, `.gpkg`. CityJSON and CityGML are not readable directly —

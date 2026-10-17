@@ -24,6 +24,7 @@ import {
   Shape,
   SphereGeometry,
   Sprite,
+  SpriteMaterial,
   Vector2,
   Vector3,
   WebGLRenderer,
@@ -40,7 +41,8 @@ import {
   type MatchedLandmark,
 } from '@/components/map/torontoLandmarks';
 
-const MASSING_URL = '/data/toronto-massing.json';
+const MASSING_CACHE_URL = '/data/toronto-massing.json';
+const MASSING_API_URL = '/api/buildings/massing';
 
 /** Only keep structures tall enough to be occupied / electrified buildings. */
 const MIN_ELECTRIC_HEIGHT_M = 10;
@@ -84,7 +86,15 @@ const KEY_MAP: Record<string, KeyAction> = {
 };
 
 type MassingBuilding = {
+  id?: number;
   h: number;
+  levels?: number;
+  floors_estimated?: boolean;
+  min_h?: number | null;
+  max_h?: number | null;
+  avg_h?: number | null;
+  height_src?: string | null;
+  bldg_src?: string | null;
   rings: [number, number][][];
 };
 
@@ -96,6 +106,22 @@ type MassingData = {
   landmarks?: { cnTower?: { x: number; z: number; height: number } };
   buildings: MassingBuilding[];
 };
+
+async function loadMassingData(): Promise<{ data: MassingData; fromTiger: boolean }> {
+  try {
+    const res = await fetch(MASSING_API_URL);
+    if (res.ok) {
+      const data = (await res.json()) as MassingData;
+      if (data.buildings?.length) return { data, fromTiger: true };
+    }
+  } catch {
+    // Fall back to the static cache when TigerData is offline.
+  }
+  const res = await fetch(MASSING_CACHE_URL);
+  if (!res.ok) throw new Error(`Failed to fetch massing data (${res.status})`);
+  const data = (await res.json()) as MassingData;
+  return { data, fromTiger: false };
+}
 
 function hash01(n: number) {
   const x = Math.sin(n * 127.1 + 311.7) * 43758.5453;
@@ -264,12 +290,14 @@ function addLandmarkExtras(match: MatchedLandmark, group: Group) {
     metalness: 0.18,
   });
 
-  // Rooftop HUD ring
+  // Rooftop HUD ring — Rogers sits higher so the stand clears the bowl roof.
+  const ringY = match.landmark.id === 'rogers-centre' ? match.h + 8 : match.h + 2.5;
   const ring = new Mesh(new CylinderGeometry(8, 8, 0.6, 24, 1, true), accent);
-  ring.position.set(match.x, match.h + 2.5, match.z);
+  ring.position.set(match.x, ringY, match.z);
   group.add(ring);
 
   // Corner beacons
+  const beaconY = match.landmark.id === 'rogers-centre' ? match.h + 6.5 : match.h + 1.2;
   for (const [dx, dz] of [
     [6, 6],
     [-6, 6],
@@ -277,7 +305,7 @@ function addLandmarkExtras(match: MatchedLandmark, group: Group) {
     [-6, -6],
   ] as const) {
     const beacon = new Mesh(new BoxGeometry(1.2, 2.4, 1.2), accent);
-    beacon.position.set(match.x + dx, match.h + 1.2, match.z + dz);
+    beacon.position.set(match.x + dx, beaconY, match.z + dz);
     group.add(beacon);
   }
 
@@ -300,12 +328,21 @@ function addLandmarkExtras(match: MatchedLandmark, group: Group) {
 
 export type BuildingPick = {
   buildingIndex: number;
+  buildingId?: number;
   name: string;
   kind: string;
   h: number;
   footprint_m2: number;
   x: number;
   z: number;
+  levels?: number;
+  floors_estimated?: boolean;
+  min_h?: number | null;
+  max_h?: number | null;
+  avg_h?: number | null;
+  height_src?: string | null;
+  bldg_src?: string | null;
+  data_source: 'tigerdata' | 'massing-cache';
 };
 
 function ringBBox(ring: [number, number][]) {
@@ -330,6 +367,7 @@ function ringBBox(ring: [number, number][]) {
 function buildCityMesh(
   buildings: MassingBuilding[],
   matches: MatchedLandmark[],
+  dataSource: BuildingPick['data_source'] = 'massing-cache',
 ): { group: Group; signs: Sprite[]; hitTargets: Group } {
   const group = new Group();
   const signs: Sprite[] = [];
@@ -384,9 +422,10 @@ function buildCityMesh(
     const match = landmarkByIndex.get(index);
     const bbox = ringBBox(outer);
 
-    // Main shaft — leave headroom for setback crown on tall towers.
-    const crownH = h >= 90 ? Math.min(28, h * 0.14) : 0;
-    const shaftH = h - crownH;
+    // Prefer MAX_HEIGHT from TigerData / massing when it exceeds AVG_HEIGHT.
+    const buildH = building.max_h != null && building.max_h > h ? building.max_h : h;
+    const crownH = buildH >= 90 ? Math.min(28, buildH * 0.14) : 0;
+    const shaftH = buildH - crownH;
     const shape = makeShape(outer, holes);
     const shaft = extrudeUp(shape, shaftH);
     (isLandmark ? landmarkGeos : shellGeos).push(shaft);
@@ -402,23 +441,32 @@ function buildCityMesh(
     }
 
     // Mid-tower mechanical belt on very tall buildings
-    if (h >= 160) {
-      const beltY = h * 0.55;
+    if (buildH >= 160) {
+      const beltY = buildH * 0.55;
       const belt = extrudeUp(makeShape(outer, holes, 0.8), 2.2, beltY);
       accentGeos.push(belt);
     }
 
     // Invisible click proxy (raycastable)
-    const hit = new Mesh(new BoxGeometry(bbox.w, h, bbox.d), hitMat);
-    hit.position.set(bbox.cx, h / 2, bbox.cz);
+    const hit = new Mesh(new BoxGeometry(bbox.w, buildH, bbox.d), hitMat);
+    hit.position.set(bbox.cx, buildH / 2, bbox.cz);
     hit.userData.pick = {
       buildingIndex: index,
+      buildingId: building.id,
       name: match?.landmark.short ?? match?.landmark.name ?? `Building · ${Math.round(h)}m`,
       kind: match?.landmark.kind ?? (h >= 80 ? 'office' : 'structure'),
       h,
       footprint_m2: match?.footprint_m2 ?? ringArea(outer),
       x: bbox.cx,
       z: bbox.cz,
+      levels: building.levels,
+      floors_estimated: building.floors_estimated,
+      min_h: building.min_h,
+      max_h: building.max_h,
+      avg_h: building.avg_h ?? h,
+      height_src: building.height_src,
+      bldg_src: building.bldg_src,
+      data_source: dataSource,
     } satisfies BuildingPick;
     hitTargets.add(hit);
   });
@@ -475,6 +523,14 @@ function buildCityMesh(
         footprint_m2: match.footprint_m2,
         x: match.x,
         z: match.z,
+        levels: 147,
+        floors_estimated: true,
+        avg_h: 553,
+        max_h: 553,
+        min_h: null,
+        height_src: 'Landmark reference',
+        bldg_src: 'CN Tower',
+        data_source: dataSource,
       } satisfies BuildingPick;
       hitTargets.add(cnHit);
     }
@@ -482,9 +538,26 @@ function buildCityMesh(
     const label = match.landmark.short ?? match.landmark.name;
     const kind = (match.landmark.kind ?? 'structure').toUpperCase();
     const sign = createFuturisticSign(label, kind);
-    const lift = match.landmark.id === 'cn-tower' ? 570 : match.h + 22;
-    sign.position.set(match.x, lift, match.z);
-    sign.userData.anchor = { x: match.x, y: lift, z: match.z };
+    const sx = match.x;
+    const sz = match.z;
+    let lift = match.landmark.id === 'cn-tower' ? 570 : match.h + 22;
+
+    // Rogers Centre: centre of the roof, plate forced visible above the stand.
+    if (match.landmark.id === 'rogers-centre') {
+      lift = match.h + 28;
+      const mat = sign.material as SpriteMaterial;
+      mat.depthTest = false;
+      mat.depthWrite = false;
+      mat.fog = false;
+      mat.needsUpdate = true;
+      sign.renderOrder = 20;
+      const base = sign.userData.baseScale as { x: number; y: number };
+      sign.scale.set(base.x * 1.35, base.y * 1.35, 1);
+      sign.userData.baseScale = { x: base.x * 1.35, y: base.y * 1.35 };
+    }
+
+    sign.position.set(sx, lift, sz);
+    sign.userData.anchor = { x: sx, y: lift, z: sz };
     group.add(sign);
     signs.push(sign);
   }
@@ -507,43 +580,102 @@ function buildCnTower(x = 0, z = 0): Group {
   g.position.set(x, 0, z);
 
   const shell = new MeshStandardMaterial({
-    color: '#0a0e14',
-    roughness: 0.9,
-    metalness: 0.12,
+    color: '#101820',
+    roughness: 0.72,
+    metalness: 0.35,
+    emissive: '#0a2a38',
+    emissiveIntensity: 0.35,
   });
-  const accent = new MeshBasicMaterial({ color: '#7dd3fc' });
+  const glow = new MeshBasicMaterial({ color: '#67e8f9' });
+  const warm = new MeshBasicMaterial({ color: '#fde68a' });
+  const litGlass = new MeshBasicMaterial({
+    color: '#7dd3fc',
+    transparent: true,
+    opacity: 0.55,
+  });
 
-  const base = new Mesh(new CylinderGeometry(26, 32, 16, 20), shell);
+  // Concrete base + Y-legs
+  const base = new Mesh(new CylinderGeometry(26, 32, 16, 24), shell);
   base.position.y = 8;
   g.add(base);
 
-  const legs = new Mesh(new CylinderGeometry(9, 20, 50, 14), shell);
+  const legs = new Mesh(new CylinderGeometry(9, 20, 50, 18), shell);
   legs.position.y = 41;
   g.add(legs);
 
-  const shaft = new Mesh(new CylinderGeometry(5.5, 8, 280, 16), shell);
-  shaft.position.y = 206;
+  // Continuous main shaft (no gaps) up into the pods
+  const shaft = new Mesh(new CylinderGeometry(5.2, 8, 290, 20), shell);
+  shaft.position.y = 211;
   g.add(shaft);
 
-  for (const [y, r, h] of [
-    [350, 20, 10],
-    [385, 11, 7],
-  ] as const) {
-    const pod = new Mesh(new CylinderGeometry(r, r + 2, h, 20), shell);
-    pod.position.y = y;
-    g.add(pod);
-    const ring = new Mesh(new CylinderGeometry(r + 0.4, r + 0.4, 1.2, 20), accent);
+  // Climbing light bands along the shaft
+  for (let i = 0; i < 14; i++) {
+    const y = 90 + i * 18;
+    const band = new Mesh(new CylinderGeometry(6.2, 6.6, 1.1, 16), glow);
+    band.position.y = y;
+    g.add(band);
+  }
+
+  // Main pod (SkyPod) — lit glass ring + neon lip
+  const mainPod = new Mesh(new CylinderGeometry(18, 22, 14, 28), shell);
+  mainPod.position.y = 352;
+  g.add(mainPod);
+  const mainGlass = new Mesh(new CylinderGeometry(19.5, 21, 8, 28, 1, true), litGlass);
+  mainGlass.position.y = 352;
+  g.add(mainGlass);
+  const mainRing = new Mesh(new CylinderGeometry(22.5, 22.5, 1.4, 28), glow);
+  mainRing.position.y = 359;
+  g.add(mainRing);
+  const mainRingLo = new Mesh(new CylinderGeometry(22.5, 22.5, 1.4, 28), glow);
+  mainRingLo.position.y = 345;
+  g.add(mainRingLo);
+
+  // Neck between pods (this was the broken empty middle)
+  const neck = new Mesh(new CylinderGeometry(4.2, 5.2, 22, 16), shell);
+  neck.position.y = 370;
+  g.add(neck);
+  const neckGlow = new Mesh(new CylinderGeometry(4.6, 5.5, 1.2, 16), glow);
+  neckGlow.position.y = 370;
+  g.add(neckGlow);
+
+  // Upper pod
+  const upperPod = new Mesh(new CylinderGeometry(10, 12, 9, 24), shell);
+  upperPod.position.y = 386;
+  g.add(upperPod);
+  const upperGlass = new Mesh(new CylinderGeometry(11, 12.2, 5, 24, 1, true), litGlass);
+  upperGlass.position.y = 386;
+  g.add(upperGlass);
+  const upperRing = new Mesh(new CylinderGeometry(12.6, 12.6, 1.2, 24), glow);
+  upperRing.position.y = 391;
+  g.add(upperRing);
+
+  // Antenna / needle — continuous from upper pod
+  const needleBase = new Mesh(new CylinderGeometry(2.6, 4, 18, 12), shell);
+  needleBase.position.y = 400;
+  g.add(needleBase);
+
+  const needle = new Mesh(new CylinderGeometry(0.55, 2.4, 145, 12), shell);
+  needle.position.y = 481;
+  g.add(needle);
+
+  for (let i = 0; i < 8; i++) {
+    const y = 420 + i * 16;
+    const r = 2.1 - i * 0.18;
+    const ring = new Mesh(new CylinderGeometry(r, r, 0.9, 12), glow);
     ring.position.y = y;
     g.add(ring);
   }
 
-  const needle = new Mesh(new CylinderGeometry(0.7, 2.8, 160, 10), shell);
-  needle.position.y = 470;
-  g.add(needle);
-
-  const tip = new Mesh(new SphereGeometry(1.8, 10, 10), accent);
-  tip.position.y = 552;
+  const tip = new Mesh(new SphereGeometry(2.2, 12, 12), warm);
+  tip.position.y = 554;
   g.add(tip);
+  const tipHalo = new Mesh(new SphereGeometry(3.4, 12, 12), new MeshBasicMaterial({
+    color: '#fde68a',
+    transparent: true,
+    opacity: 0.35,
+  }));
+  tipHalo.position.y = 554;
+  g.add(tipHalo);
 
   return g;
 }
@@ -568,8 +700,9 @@ function ElectricityPanel({
         <div>
           <div className="text-[10px] uppercase tracking-[0.2em] text-cyan-300/80">Grid node</div>
           <h2 className="mt-1 text-lg font-semibold leading-tight text-nc-text">{data.name}</h2>
-          <div className="mt-1 text-xs capitalize text-nc-muted">
-            {data.kind} · {data.floors} floors · {data.height_m} m
+              <div className="mt-1 text-xs capitalize text-nc-muted">
+            {data.kind} · {data.floors} floors
+            {data.construction.floors_estimated ? ' (est.)' : ''} · {data.height_m} m
           </div>
         </div>
         <button
@@ -582,12 +715,37 @@ function ElectricityPanel({
       </div>
 
       <div className="mt-4 grid grid-cols-2 gap-2 text-sm">
-        <Metric label="Demand now" value={`${data.demand_kw.toLocaleString()} kW`} accent />
+        <Metric label="Avg height" value={`${(data.construction.avg_h ?? data.height_m).toLocaleString()} m`} accent />
+        <Metric
+          label="Max height"
+          value={data.construction.max_h != null ? `${data.construction.max_h.toLocaleString()} m` : '—'}
+        />
+        <Metric label="Footprint" value={`${data.footprint_m2.toLocaleString()} m²`} />
+        <Metric
+          label="Levels"
+          value={`${data.floors}${data.construction.floors_estimated ? ' est.' : ''}`}
+        />
+        <Metric label="Demand now" value={`${data.demand_kw.toLocaleString()} kW`} />
         <Metric label="Peak load" value={`${data.peak_kw.toLocaleString()} kW`} />
         <Metric label="Daily energy" value={`${data.daily_kwh.toLocaleString()} kWh`} />
         <Metric label="Annual" value={`${data.annual_mwh.toLocaleString()} MWh`} />
-        <Metric label="Grid import" value={`${data.grid_import_kw.toLocaleString()} kW`} />
-        <Metric label="Load factor" value={`${data.load_factor_pct}%`} />
+      </div>
+
+      <div className="mt-3 space-y-1.5 rounded-lg border border-nc-border/80 bg-nc-panel/50 px-3 py-2 text-[11px]">
+        <div className="flex justify-between gap-3">
+          <span className="text-nc-muted">Height source</span>
+          <span className="text-right text-nc-text">{data.construction.height_src ?? '—'}</span>
+        </div>
+        <div className="flex justify-between gap-3">
+          <span className="text-nc-muted">Building source</span>
+          <span className="text-right text-nc-text">{data.construction.bldg_src ?? '—'}</span>
+        </div>
+        <div className="flex justify-between gap-3">
+          <span className="text-nc-muted">Data</span>
+          <span className="text-right text-cyan-200/90">
+            {data.construction.data_source === 'tigerdata' ? 'TigerData' : 'Massing cache'}
+          </span>
+        </div>
       </div>
 
       <div className="mt-4">
@@ -617,8 +775,9 @@ function ElectricityPanel({
       </div>
 
       <p className="mt-3 text-[10px] leading-snug text-nc-muted/80">
-        Simulated from massing height × footprint (illustrative digital twin — not metered utility
-        data).
+        Heights and footprint from City of Toronto 3D Massing via{' '}
+        {data.construction.data_source === 'tigerdata' ? 'TigerData' : 'local cache'}. Electricity
+        load mix is simulated, not metered utility data.
       </p>
     </div>
   );
@@ -680,12 +839,20 @@ export default function TorontoCityViewer({
       }
       setElectricity(
         estimateBuildingElectricity({
-          id: `b-${pick.buildingIndex}`,
+          id: pick.buildingId != null ? `tiger-${pick.buildingId}` : `b-${pick.buildingIndex}`,
           name: pick.name,
           kind: pick.kind,
           height_m: pick.h,
           footprint_m2: pick.footprint_m2,
           seed: pick.buildingIndex * 17 + Math.round(pick.h),
+          floors: pick.levels,
+          floors_estimated: pick.floors_estimated,
+          min_h: pick.min_h,
+          max_h: pick.max_h,
+          avg_h: pick.avg_h,
+          height_src: pick.height_src,
+          bldg_src: pick.bldg_src,
+          data_source: pick.data_source,
         }),
       );
     };
@@ -932,20 +1099,22 @@ export default function TorontoCityViewer({
 
     (async () => {
       try {
-        const res = await fetch(MASSING_URL);
-        if (!res.ok) throw new Error(`Failed to fetch massing data (${res.status})`);
-        const data = (await res.json()) as MassingData;
+        const { data, fromTiger } = await loadMassingData();
         if (disposed) return;
 
         const electric = data.buildings.filter(isElectrifiedBuilding);
         setStatus(`Labeling Toronto landmarks across ${electric.length.toLocaleString()} buildings…`);
-        setCredit(`${data.source} · ${data.license}`);
+        setCredit(
+          fromTiger
+            ? `TigerData · ${data.license}`
+            : `${data.source} · ${data.license}`,
+        );
 
         await new Promise((r) => setTimeout(r, 30));
         if (disposed) return;
 
         const matches = matchLandmarksToBuildings(electric);
-        const built = buildCityMesh(electric, matches);
+        const built = buildCityMesh(electric, matches, fromTiger ? 'tigerdata' : 'massing-cache');
         city = built.group;
         signs = built.signs;
         hitTargets = built.hitTargets;

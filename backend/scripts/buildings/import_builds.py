@@ -35,9 +35,12 @@ TABLE = "buildings"
 READABLE = {".shp", ".geojson", ".json", ".gpkg"}
 
 # Column names seen in the wild for building height and storey count.
+# Toronto 3D Massing uses AVG_HEIGHT / MAX_HEIGHT / MIN_HEIGHT (metres AGL).
+# Do not treat HEIGHT_MSL / SURF_ELEV / elevation as building height.
 HEIGHT_COLUMNS = (
+    "avg_height", "max_height", "min_height",
     "height", "height_m", "heightroof", "roof_height", "bldg_height",
-    "buildingheight", "mean_height", "maxheight", "hoehe", "h", "elevation",
+    "buildingheight", "mean_height", "maxheight", "hoehe", "h",
 )
 LEVEL_COLUMNS = (
     "levels", "building:levels", "num_floors", "numfloors", "floors",
@@ -107,8 +110,11 @@ def load_file(path: Path) -> gpd.GeoDataFrame:
     return gpd.read_file(path)
 
 
-def prepare(gdf: gpd.GeoDataFrame, source_file: str) -> list[dict]:
-    """Normalize one file into insertable rows (geometry as EWKB hex)."""
+def prepare(gdf: gpd.GeoDataFrame, source_file: str, bbox: tuple[float, float, float, float] | None = None) -> list[dict]:
+    """Normalize one file into insertable rows (geometry as EWKB hex).
+
+    bbox is (lon_min, lat_min, lon_max, lat_max) in EPSG:4326 when provided.
+    """
     gdf = gdf[~gdf.geometry.isna()].copy()
     if gdf.empty:
         return []
@@ -119,6 +125,13 @@ def prepare(gdf: gpd.GeoDataFrame, source_file: str) -> list[dict]:
     elif gdf.crs.to_epsg() != TARGET_SRID:
         print(f"  reprojecting {gdf.crs.to_string()} -> EPSG:{TARGET_SRID}")
         gdf = gdf.to_crs(epsg=TARGET_SRID)
+
+    if bbox is not None:
+        lon_min, lat_min, lon_max, lat_max = bbox
+        gdf = gdf.cx[lon_min:lon_max, lat_min:lat_max].copy()
+        print(f"  bbox filter -> {len(gdf)} features")
+        if gdf.empty:
+            return []
 
     attribute_columns = [c for c in gdf.columns if c != gdf.geometry.name]
     height_col = pick_column(attribute_columns, HEIGHT_COLUMNS)
@@ -161,7 +174,21 @@ def main() -> int:
     parser.add_argument("--replace", action="store_true", help="empty the table before importing")
     parser.add_argument("--dry-run", action="store_true", help="report what would be imported")
     parser.add_argument("--limit", type=int, help="import at most N features per file")
+    parser.add_argument(
+        "--bbox",
+        type=str,
+        help="lon_min,lat_min,lon_max,lat_max in EPSG:4326 (downtown default example: "
+             "-79.41,43.63,-79.36,43.66)",
+    )
     args = parser.parse_args()
+
+    bbox = None
+    if args.bbox:
+        parts = [float(p.strip()) for p in args.bbox.split(",")]
+        if len(parts) != 4:
+            print("--bbox must be lon_min,lat_min,lon_max,lat_max")
+            return 1
+        bbox = (parts[0], parts[1], parts[2], parts[3])
 
     paths = args.paths or sorted(p for p in DATA_DIR.glob("**/*") if p.suffix.lower() in READABLE)
     # A .shp carries sidecars; reading the .shp alone picks them up.
@@ -197,7 +224,7 @@ def main() -> int:
             gdf = gdf.head(args.limit)
         print(f"  {len(gdf)} features | geometry: {gdf.geom_type.unique().tolist()}")
 
-        prepared = prepare(gdf, path.name)
+        prepared = prepare(gdf, path.name, bbox=bbox)
         if not prepared:
             print("  ! no usable geometry, skipped")
             continue

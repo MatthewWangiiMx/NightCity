@@ -31,6 +31,22 @@ the `weather_observations` hypertable. Apply it after the initial migration:
 
 ```powershell
 psql "$env:TIGERDATA_URL" -f backend/app/db/migrations/002_weather.sql
+
+## Buildings (Explore City)
+
+Import downtown Toronto 3D Massing into the `buildings` table, then set
+`USE_DATABASE=true` so `/api/buildings/massing` can serve live geometry:
+
+```powershell
+cd backend
+.\.venv\Scripts\Activate.ps1
+python scripts/buildings/import_builds.py `
+  ..\tmp\massing\extracted\3DMassingShapefile_2025_WGS84.shp `
+  --bbox -79.41,43.63,-79.36,43.66
+```
+
+The Explore City viewer prefers TigerData; if the API is empty it falls back to
+`frontend/public/data/toronto-massing.json`.
 ```
 
 With `USE_DATABASE=true`, fetch and store three days of hourly weather for the default Toronto

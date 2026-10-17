@@ -225,6 +225,73 @@ def recent_telemetry(district_id: str, limit: int = 500) -> list[TimeStep]:
         return [TimeStep(**row) for row in reversed(rows)]
 
 
+def list_buildings_for_massing(
+    *,
+    lon_min: float,
+    lat_min: float,
+    lon_max: float,
+    lat_max: float,
+    limit: int = 50_000,
+) -> list[dict]:
+    """Downtown footprints from TigerData `buildings`, as GeoJSON + attributes."""
+    with get_session() as s:
+        if s is None:
+            return []
+        rows = s.execute(
+            text(
+                """
+                SELECT id, source_file, source_id, height_m, levels, properties,
+                       ST_AsGeoJSON(geom)::json AS geojson
+                FROM buildings
+                WHERE geom && ST_MakeEnvelope(:lon_min, :lat_min, :lon_max, :lat_max, 4326)
+                  AND ST_Intersects(
+                        geom,
+                        ST_MakeEnvelope(:lon_min, :lat_min, :lon_max, :lat_max, 4326)
+                      )
+                ORDER BY COALESCE(height_m, 0) DESC
+                LIMIT :limit
+                """
+            ),
+            {
+                "lon_min": lon_min,
+                "lat_min": lat_min,
+                "lon_max": lon_max,
+                "lat_max": lat_max,
+                "limit": limit,
+            },
+        ).mappings().all()
+        return [dict(row) for row in rows]
+
+
+def get_building(building_id: int) -> dict | None:
+    """Single TigerData building with footprint GeoJSON."""
+    with get_session() as s:
+        if s is None:
+            return None
+        row = s.execute(
+            text(
+                """
+                SELECT id, source_file, source_id, height_m, levels, properties,
+                       ST_AsGeoJSON(geom)::json AS geojson,
+                       ST_X(ST_Centroid(geom)) AS lon,
+                       ST_Y(ST_Centroid(geom)) AS lat,
+                       ST_Area(geography(ST_Force2D(geom))) AS footprint_m2
+                FROM buildings
+                WHERE id = :id
+                """
+            ),
+            {"id": building_id},
+        ).mappings().first()
+        return dict(row) if row else None
+
+
+def buildings_count() -> int | None:
+    with get_session() as s:
+        if s is None:
+            return None
+        return int(s.execute(text("SELECT count(*) FROM buildings")).scalar() or 0)
+
+
 def save_weather_observations(observations: list[WeatherObservation]) -> int:
     """Upsert provider observations and return the number of rows received."""
     if not observations:

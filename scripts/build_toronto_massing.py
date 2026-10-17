@@ -175,9 +175,33 @@ def main() -> None:
             skipped_cn += 1
             continue
 
+        min_h = rec.get("MIN_HEIGHT")
+        max_h = rec.get("MAX_HEIGHT")
+        try:
+            min_h = float(min_h) if min_h is not None else None
+        except (TypeError, ValueError):
+            min_h = None
+        try:
+            max_h = float(max_h) if max_h is not None else None
+        except (TypeError, ValueError):
+            max_h = None
+        # Toronto massing often leaves MIN/MAX at 0 when only AVG_HEIGHT is filled.
+        if min_h is not None and min_h <= 0:
+            min_h = None
+        if max_h is not None and max_h <= 0:
+            max_h = None
+
+        floors = max(1, int(round(height / 3.2)))
         buildings.append(
             {
                 "h": round(height, 2),
+                "levels": floors,
+                "floors_estimated": True,
+                "min_h": round(min_h, 2) if min_h is not None else None,
+                "max_h": round(max_h, 2) if max_h is not None else None,
+                "avg_h": round(height, 2),
+                "height_src": rec.get("HEIGHT_SRC") or None,
+                "bldg_src": rec.get("BLDG_SRC") or None,
                 "c": (round(cx, 2), round(cz, 2)),
                 "rings": [[[round(x, 2), round(z, 2)] for x, z in ring] for ring in rings],
             }

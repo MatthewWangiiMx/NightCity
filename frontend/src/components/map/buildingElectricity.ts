@@ -1,7 +1,18 @@
 /**
- * Deterministic synthetic electricity profile for a massing footprint.
- * Scaled from height + footprint so the digital twin stays illustrative, not metered.
+ * Building electricity + construction profile.
+ * Geometry/heights prefer TigerData (Toronto 3D Massing); load mix stays illustrative.
  */
+
+export type BuildingConstruction = {
+  levels: number;
+  floors_estimated: boolean;
+  min_h: number | null;
+  max_h: number | null;
+  avg_h: number | null;
+  height_src: string | null;
+  bldg_src: string | null;
+  data_source: 'tigerdata' | 'massing-cache';
+};
 
 export type BuildingElectricity = {
   id: string;
@@ -23,6 +34,7 @@ export type BuildingElectricity = {
   plug_share_pct: number;
   grid_import_kw: number;
   status: 'nominal' | 'elevated' | 'flexible';
+  construction: BuildingConstruction;
 };
 
 function hash01(n: number) {
@@ -50,16 +62,26 @@ export function estimateBuildingElectricity(input: {
   height_m: number;
   footprint_m2: number;
   seed?: number;
+  floors?: number;
+  floors_estimated?: boolean;
+  min_h?: number | null;
+  max_h?: number | null;
+  avg_h?: number | null;
+  height_src?: string | null;
+  bldg_src?: string | null;
+  data_source?: BuildingConstruction['data_source'];
 }): BuildingElectricity {
   const kind = input.kind ?? (input.height_m >= 80 ? 'office' : 'structure');
-  const floors = Math.max(1, Math.round(input.height_m / 3.5));
+  const floors =
+    input.floors != null && input.floors > 0
+      ? Math.round(input.floors)
+      : Math.max(1, Math.round(input.height_m / 3.2));
   const area = Math.max(40, input.footprint_m2);
-  const gfa = area * floors; // gross floor area proxy
+  const gfa = area * floors;
   const seed = input.seed ?? input.id.length * 97 + Math.round(input.height_m * 10);
   const jitter = 0.85 + hash01(seed) * 0.3;
   const intensity = (KIND_INTENSITY[kind] ?? 1) * jitter;
 
-  // ~45–90 W/m² mixed-use night/day blend → kW
   const wPerM2 = 55 * intensity;
   const peak_kw = (gfa * wPerM2) / 1000;
   const load_factor = 0.38 + hash01(seed + 3) * 0.22;
@@ -72,9 +94,10 @@ export function estimateBuildingElectricity(input: {
   const plug = Math.max(10, 100 - hvac - lighting);
 
   const renewable = Math.round(8 + hash01(seed + 11) * 28);
-  const ev = kind === 'arena' || kind === 'stadium' || kind === 'hotel'
-    ? 8 + Math.round(hash01(seed + 13) * 24)
-    : Math.round(hash01(seed + 13) * 6);
+  const ev =
+    kind === 'arena' || kind === 'stadium' || kind === 'hotel'
+      ? 8 + Math.round(hash01(seed + 13) * 24)
+      : Math.round(hash01(seed + 13) * 6);
 
   const flex = hash01(seed + 17);
   const status: BuildingElectricity['status'] =
@@ -99,5 +122,15 @@ export function estimateBuildingElectricity(input: {
     plug_share_pct: plug,
     grid_import_kw: Math.round(demand_kw * (1 - renewable / 100) * 10) / 10,
     status,
+    construction: {
+      levels: floors,
+      floors_estimated: input.floors_estimated ?? input.floors == null,
+      min_h: input.min_h ?? null,
+      max_h: input.max_h ?? null,
+      avg_h: input.avg_h ?? input.height_m,
+      height_src: input.height_src ?? null,
+      bldg_src: input.bldg_src ?? null,
+      data_source: input.data_source ?? 'massing-cache',
+    },
   };
 }

@@ -11,6 +11,28 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+export type MassingBuilding = {
+  id?: number;
+  h: number;
+  levels?: number;
+  floors_estimated?: boolean;
+  min_h?: number | null;
+  max_h?: number | null;
+  avg_h?: number | null;
+  height_src?: string | null;
+  bldg_src?: string | null;
+  rings: [number, number][][];
+};
+
+export type MassingData = {
+  source: string;
+  license: string;
+  url: string;
+  count: number;
+  landmarks?: { cnTower?: { x: number; z: number; height: number } };
+  buildings: MassingBuilding[];
+};
+
 export const api = {
   health: () => request<{ status: string; database: string; llm: string }>('/health'),
   district: (id = 'nightcity') => request<District>(`/district/${id}`),
@@ -20,4 +42,7 @@ export const api = {
   playback: (runId: string, variant: 'baseline' | 'optimized' = 'optimized') =>
     request<TimeStep[]>(`/simulation/runs/${runId}/playback?variant=${variant}`),
   dispatch: (runId: string) => request<DispatchAction[]>(`/dispatch/${runId}`),
+  /** Live TigerData massing; throws if DB empty / disabled. */
+  buildingsMassing: () => request<MassingData>('/buildings/massing'),
+  building: (id: number) => request<Record<string, unknown>>(`/buildings/${id}`),
 };

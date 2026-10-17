@@ -10,10 +10,10 @@ const MODES = [
 
 const plateClass =
   'group relative flex min-w-[14rem] items-center justify-center overflow-hidden px-10 py-7 text-center ' +
-  'rounded-xl backdrop-blur-lg transition duration-300 sm:min-w-[15.5rem] sm:px-12 sm:py-8 ' +
-  'bg-[linear-gradient(145deg,rgba(8,24,36,0.22),rgba(4,14,24,0.12))] ' +
+  'rounded-xl transition duration-300 sm:min-w-[15.5rem] sm:px-12 sm:py-8 ' +
+  'bg-[linear-gradient(145deg,rgba(8,24,36,0.78),rgba(4,14,24,0.72))] ' +
   'shadow-[0_0_20px_rgba(34,211,238,0.1),inset_0_1px_0_rgba(186,230,253,0.14)] ' +
-  'hover:-translate-y-0.5 hover:bg-[linear-gradient(145deg,rgba(12,36,52,0.32),rgba(6,20,32,0.18))] ' +
+  'hover:-translate-y-0.5 hover:bg-[linear-gradient(145deg,rgba(12,36,52,0.88),rgba(6,20,32,0.8))] ' +
   'hover:shadow-[0_0_32px_rgba(34,211,238,0.28),inset_0_1px_0_rgba(186,230,253,0.22)]';
 
 /** HUD nameplate chrome matching the 3D building signs. */
@@ -42,11 +42,11 @@ function ModePlate({
       {/* Soft outer glow */}
       <span className="pointer-events-none absolute -inset-1 -z-10 rounded-2xl bg-cyan-400/10 opacity-70 blur-md group-hover:opacity-100" />
 
-      <span className="relative flex flex-col items-center gap-2">
-        <span className="rounded border border-cyan-300/25 bg-cyan-400/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-200/90 backdrop-blur-sm">
+      <span className="relative flex flex-col items-center gap-2 font-mode">
+        <span className="rounded border border-cyan-300/25 bg-cyan-400/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.16em] text-cyan-200/90">
           {chip}
         </span>
-        <span className="text-2xl font-bold tracking-tight text-[#e8f7ff] drop-shadow-[0_0_12px_rgba(103,232,249,0.35)] sm:text-3xl">
+        <span className="text-2xl font-semibold tracking-[-0.02em] text-[#e8f7ff] sm:text-[1.75rem]">
           {label}
         </span>
         <span className="h-px w-16 bg-gradient-to-r from-transparent via-sky-300/55 to-transparent" />

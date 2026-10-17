@@ -24,6 +24,8 @@
   --color-series-renew: #199e70;
   --color-series-solar: #c98500;
   --color-series-neutral: #8a9aa5; /* baseline reference / remainder, always direct-labeled */
+
+  --font-mode: "Instrument Sans", ui-sans-serif, sans-serif;
 }
 
 html,

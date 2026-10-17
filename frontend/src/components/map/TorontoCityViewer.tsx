@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   AmbientLight,
+  BufferGeometry,
   BoxGeometry,
   Color,
   CylinderGeometry,
@@ -11,6 +12,9 @@ import {
   Group,
   HemisphereLight,
   InstancedMesh,
+  Line,
+  LineBasicMaterial,
+  LineSegments,
   type Material,
   Matrix4,
   Mesh,
@@ -46,6 +50,8 @@ import { useEwrbProfile } from '@/hooks/useEwrb';
 
 const MASSING_CACHE_URL = '/data/toronto-massing.json';
 const MASSING_API_URL = '/api/buildings/massing';
+const GRID_URL = '/data/grid.json';
+const BUILDING_LINK_RADIUS_M = 250;
 
 /** Only keep structures tall enough to be occupied / electrified buildings. */
 const MIN_ELECTRIC_HEIGHT_M = 10;
@@ -74,6 +80,8 @@ type SearchTarget = {
   x: number;
   z: number;
   h: number;
+  /** World Y of the floating nameplate (fly-to look target). */
+  plateY: number;
   footprint_m2: number;
 };
 
@@ -101,7 +109,8 @@ const KEY_MAP: Record<string, KeyAction> = {
 };
 
 type MassingBuilding = {
-  id?: number;
+  id?: number | string;
+  node_id?: string;
   h: number;
   levels?: number;
   floors_estimated?: boolean;
@@ -112,6 +121,105 @@ type MassingBuilding = {
   bldg_src?: string | null;
   rings: [number, number][][];
 };
+
+type GridNode = {
+  node_id: string;
+  node_type: 'substation' | 'feeder' | 'transformer';
+  x: number;
+  z: number;
+};
+
+type GridEdge = {
+  parent_id: string;
+  child_id: string;
+  is_tie: boolean;
+  normally_open: boolean;
+};
+
+type GridData = { nodes: GridNode[]; edges: GridEdge[] };
+
+async function loadGrid(): Promise<GridData | null> {
+  try {
+    const res = await fetch(GRID_URL);
+    if (!res.ok) return null;
+    const data = (await res.json()) as GridData;
+    return data.nodes?.length && data.edges ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildGridMesh(data: GridData, buildings: MassingBuilding[]): Group {
+  const group = new Group();
+  group.name = 'distribution-grid';
+  const byId = new Map(data.nodes.map((node) => [node.node_id, node]));
+  const lineMaterial = new LineBasicMaterial({
+    color: '#22d3ee',
+    transparent: true,
+    opacity: 0.65,
+    depthTest: false,
+  });
+  const tieMaterial = new LineBasicMaterial({
+    color: '#fbbf24',
+    transparent: true,
+    opacity: 0.75,
+    depthTest: false,
+  });
+  for (const edge of data.edges) {
+    const parent = byId.get(edge.parent_id);
+    const child = byId.get(edge.child_id);
+    if (!parent || !child) continue;
+    const geometry = new BufferGeometry().setFromPoints([
+      new Vector3(parent.x, 3, parent.z),
+      new Vector3(child.x, 3, child.z),
+    ]);
+    group.add(new Line(geometry, edge.normally_open ? tieMaterial : lineMaterial));
+  }
+  for (const node of data.nodes) {
+    const color =
+      node.node_type === 'substation'
+        ? '#fbbf24'
+        : node.node_type === 'feeder'
+          ? '#a78bfa'
+          : '#22d3ee';
+    const radius = node.node_type === 'substation' ? 18 : node.node_type === 'feeder' ? 12 : 7;
+    const puck = new Mesh(
+      new SphereGeometry(radius, 16, 10),
+      new MeshBasicMaterial({ color, depthTest: false }),
+    );
+    puck.renderOrder = 20;
+    puck.position.set(node.x, 12, node.z);
+    group.add(puck);
+  }
+  const buildingLinkPoints: Vector3[] = [];
+  for (const building of buildings) {
+    if (!building.node_id || !building.rings[0]?.length) continue;
+    const transformer = byId.get(building.node_id);
+    if (!transformer || transformer.node_type !== 'transformer') continue;
+    const center = ringCentroid(building.rings[0]);
+    if (Math.hypot(center.x - transformer.x, center.z - transformer.z) > BUILDING_LINK_RADIUS_M) {
+      continue;
+    }
+    buildingLinkPoints.push(
+      new Vector3(transformer.x, 7, transformer.z),
+      new Vector3(center.x, 5, center.z),
+    );
+  }
+  if (buildingLinkPoints.length) {
+    const buildingLinks = new LineSegments(
+      new BufferGeometry().setFromPoints(buildingLinkPoints),
+      new LineBasicMaterial({
+        color: '#67e8f9',
+        transparent: true,
+        opacity: 0.18,
+        depthTest: false,
+      }),
+    );
+    buildingLinks.renderOrder = 19;
+    group.add(buildingLinks);
+  }
+  return group;
+}
 
 type MassingData = {
   source: string;
@@ -297,22 +405,44 @@ function mergeChunks(geos: ExtrudeGeometry[], material: Material, group: Group) 
   }
 }
 
-function addLandmarkExtras(match: MatchedLandmark, group: Group) {
+/** Same top height the extruded mesh uses (avg/max + optional black crown). */
+function buildingVisualTop(building: MassingBuilding): { buildH: number; crownH: number } {
+  const h = building.h;
+  const buildH = building.max_h != null && building.max_h > h ? building.max_h : h;
+  const crownH = buildH >= 90 ? Math.min(28, buildH * 0.14) : 0;
+  return { buildH, crownH };
+}
+
+/** World Y of the landmark nameplate — keep in sync with sign placement. */
+function landmarkNameplateY(
+  match: MatchedLandmark,
+  building?: MassingBuilding,
+): number {
+  if (match.landmark.id === 'cn-tower') return 570;
+  if (match.landmark.id === 'rogers-centre') return match.h + 28;
+  const visual = building ? buildingVisualTop(building) : null;
+  const roofY = visual?.buildH ?? match.h;
+  const hasCrown = (visual?.crownH ?? 0) > 0;
+  return roofY + (hasCrown ? 16 : 22);
+}
+
+function addLandmarkExtras(match: MatchedLandmark, group: Group, roofY?: number) {
   const accent = new MeshBasicMaterial({ color: '#67e8f9' });
   const shell = new MeshStandardMaterial({
     color: '#0c1520',
     roughness: 0.85,
     metalness: 0.18,
   });
+  const roof = roofY ?? match.h;
 
   // Rooftop HUD ring — Rogers sits higher so the stand clears the bowl roof.
-  const ringY = match.landmark.id === 'rogers-centre' ? match.h + 8 : match.h + 2.5;
+  const ringY = match.landmark.id === 'rogers-centre' ? match.h + 8 : roof + 2.5;
   const ring = new Mesh(new CylinderGeometry(8, 8, 0.6, 24, 1, true), accent);
   ring.position.set(match.x, ringY, match.z);
   group.add(ring);
 
   // Corner beacons
-  const beaconY = match.landmark.id === 'rogers-centre' ? match.h + 6.5 : match.h + 1.2;
+  const beaconY = match.landmark.id === 'rogers-centre' ? match.h + 6.5 : roof + 1.2;
   for (const [dx, dz] of [
     [6, 6],
     [-6, 6],
@@ -336,14 +466,14 @@ function addLandmarkExtras(match: MatchedLandmark, group: Group) {
 
   if (match.landmark.kind === 'hotel' || match.landmark.kind === 'tower') {
     const spire = new Mesh(new CylinderGeometry(0.5, 1.4, 16, 8), accent);
-    spire.position.set(match.x, match.h + 10, match.z);
+    spire.position.set(match.x, roof + 10, match.z);
     group.add(spire);
   }
 }
 
 export type BuildingPick = {
   buildingIndex: number;
-  buildingId?: number;
+  buildingId?: number | string;
   name: string;
   kind: string;
   h: number;
@@ -526,7 +656,14 @@ function buildCityMesh(
 
   // Named landmarks only — massing/TigerData rows have no building names.
   for (const match of matches) {
-    if (match.landmark.id !== 'cn-tower') addLandmarkExtras(match, group);
+    const building =
+      match.buildingIndex >= 0 ? buildings[match.buildingIndex] : undefined;
+    const visual = building ? buildingVisualTop(building) : null;
+    // Sit on the true mesh top (including black crown), not avg-height mid-roof.
+    const roofY = visual?.buildH ?? match.h;
+    const hasCrown = (visual?.crownH ?? 0) > 0;
+
+    if (match.landmark.id !== 'cn-tower') addLandmarkExtras(match, group, roofY);
     else {
       const cnHit = new Mesh(new CylinderGeometry(18, 22, 553, 12), hitMat);
       cnHit.position.set(match.x, 276, match.z);
@@ -555,11 +692,10 @@ function buildCityMesh(
     const sign = createFuturisticSign(label, kind);
     const sx = match.x;
     const sz = match.z;
-    let lift = match.landmark.id === 'cn-tower' ? 570 : match.h + 22;
+    const lift = landmarkNameplateY(match, building);
 
     // Rogers Centre: centre of the roof, plate forced visible above the stand.
     if (match.landmark.id === 'rogers-centre') {
-      lift = match.h + 28;
       const mat = sign.material as SpriteMaterial;
       mat.depthTest = false;
       mat.depthWrite = false;
@@ -569,6 +705,15 @@ function buildCityMesh(
       const base = sign.userData.baseScale as { x: number; y: number };
       sign.scale.set(base.x * 1.35, base.y * 1.35, 1);
       sign.userData.baseScale = { x: base.x * 1.35, y: base.y * 1.35 };
+    }
+
+    // Crowned towers: keep the plate above the black cap in the middle.
+    if (hasCrown && match.landmark.id !== 'cn-tower') {
+      const mat = sign.material as SpriteMaterial;
+      mat.depthTest = false;
+      mat.depthWrite = false;
+      mat.needsUpdate = true;
+      sign.renderOrder = 15;
     }
 
     sign.position.set(sx, lift, sz);
@@ -693,6 +838,122 @@ function buildCnTower(x = 0, z = 0): Group {
   g.add(tipHalo);
 
   return g;
+}
+
+/**
+ * Downtown Toronto from official 3D Massing — dark shells, discrete windows,
+ * named landmarks with futuristic signs.
+ */
+function ElectricityPanel({
+  data,
+  onClose,
+}: {
+  data: BuildingElectricity;
+  onClose: () => void;
+}) {
+  const statusColor =
+    data.status === 'elevated' ? 'text-nc-alert' : data.status === 'flexible' ? 'text-nc-flex' : 'text-nc-renew';
+
+  return (
+    <div className="pointer-events-auto absolute right-4 top-20 z-20 w-[min(22rem,calc(100vw-2rem))] rounded-2xl border border-cyan-400/40 bg-[#061018]/92 p-4 shadow-2xl shadow-cyan-500/10 backdrop-blur-md">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-[10px] uppercase tracking-[0.2em] text-cyan-300/80">Grid node</div>
+          <h2 className="mt-1 text-lg font-semibold leading-tight text-nc-text">{data.name}</h2>
+              <div className="mt-1 text-xs capitalize text-nc-muted">
+            {data.kind} · {data.floors} floors
+            {data.construction.floors_estimated ? ' (est.)' : ''} · {data.height_m} m
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded-md border border-nc-border px-2 py-1 text-[11px] text-nc-muted hover:border-nc-renew hover:text-nc-text"
+        >
+          Close
+        </button>
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-2 text-sm">
+        <Metric label="Height" value={`${(data.construction.avg_h ?? data.height_m).toLocaleString()} m`} accent />
+        <Metric label="Footprint" value={`${data.footprint_m2.toLocaleString()} m²`} />
+        <Metric
+          label="Levels"
+          value={`${data.floors}${data.construction.floors_estimated ? ' est.' : ''}`}
+        />
+        <Metric label="Demand now" value={`${data.demand_kw.toLocaleString()} kW`} />
+        <Metric label="Peak load" value={`${data.peak_kw.toLocaleString()} kW`} />
+        <Metric label="Daily energy" value={`${data.daily_kwh.toLocaleString()} kWh`} />
+        <Metric label="Annual" value={`${data.annual_mwh.toLocaleString()} MWh`} />
+      </div>
+
+      <div className="mt-3 space-y-1.5 rounded-lg border border-nc-border/80 bg-nc-panel/50 px-3 py-2 text-[11px]">
+        <div className="flex justify-between gap-3">
+          <span className="text-nc-muted">Height source</span>
+          <span className="text-right text-nc-text">{data.construction.height_src ?? '—'}</span>
+        </div>
+        <div className="flex justify-between gap-3">
+          <span className="text-nc-muted">Building source</span>
+          <span className="text-right text-nc-text">{data.construction.bldg_src ?? '—'}</span>
+        </div>
+        <div className="flex justify-between gap-3">
+          <span className="text-nc-muted">Data</span>
+          <span className="text-right text-cyan-200/90">
+            {data.construction.data_source === 'tigerdata' ? 'TigerData' : 'Massing cache'}
+          </span>
+        </div>
+      </div>
+
+      <div className="mt-4">
+        <div className="mb-1 flex justify-between text-[11px] text-nc-muted">
+          <span>Load mix</span>
+          <span className={statusColor}>{data.status}</span>
+        </div>
+        <div className="flex h-2 overflow-hidden rounded-full bg-nc-panel-2">
+          <div className="bg-sky-400" style={{ width: `${data.hvac_share_pct}%` }} title="HVAC" />
+          <div className="bg-cyan-200" style={{ width: `${data.lighting_share_pct}%` }} title="Lighting" />
+          <div className="bg-teal-500/80" style={{ width: `${data.plug_share_pct}%` }} title="Plug loads" />
+        </div>
+        <div className="mt-1 flex justify-between text-[10px] text-nc-muted">
+          <span>HVAC {data.hvac_share_pct}%</span>
+          <span>Lights {data.lighting_share_pct}%</span>
+          <span>Plugs {data.plug_share_pct}%</span>
+        </div>
+      </div>
+
+      <div className="mt-4 flex items-center justify-between rounded-lg border border-nc-border/80 bg-nc-panel/50 px-3 py-2 text-xs">
+        <span className="text-nc-muted">Renewable offset</span>
+        <span className="font-semibold text-nc-renew">{data.renewable_offset_pct}%</span>
+      </div>
+      <div className="mt-2 flex items-center justify-between rounded-lg border border-nc-border/80 bg-nc-panel/50 px-3 py-2 text-xs">
+        <span className="text-nc-muted">EV chargers on site</span>
+        <span className="font-semibold text-nc-grid">{data.ev_chargers}</span>
+      </div>
+
+      <p className="mt-3 text-[10px] leading-snug text-nc-muted/80">
+        Heights and footprint from City of Toronto 3D Massing via{' '}
+        {data.construction.data_source === 'tigerdata' ? 'TigerData' : 'local cache'}. Electricity
+        load mix is simulated, not metered utility data.
+      </p>
+    </div>
+  );
+}
+
+function Metric({
+  label,
+  value,
+  accent,
+}: {
+  label: string;
+  value: string;
+  accent?: boolean;
+}) {
+  return (
+    <div className="rounded-lg border border-nc-border/70 bg-nc-panel/40 px-2.5 py-2">
+      <div className="text-[10px] uppercase tracking-wide text-nc-muted">{label}</div>
+      <div className={`mt-0.5 tabular-nums ${accent ? 'text-cyan-300' : 'text-nc-text'}`}>{value}</div>
+    </div>
+  );
 }
 
 function easeInOutCubic(t: number) {
@@ -840,7 +1101,9 @@ export default function TorontoCityViewer({
   const { profile: ewrbProfile, status: ewrbStatus, load: loadEwrb, clear: clearEwrb } =
     useEwrbProfile();
   const [cityReady, setCityReady] = useState(false);
+  const [gridVisible, setGridVisible] = useState(true);
   const [searchTargets, setSearchTargets] = useState<SearchTarget[]>([]);
+  const gridRef = useRef<Group | null>(null);
   const selectRef = useRef<(pick: BuildingPick | null) => void>(() => {});
   const flyToRef = useRef<(target: SearchTarget) => void>(() => {});
   const unlockFlyRef = useRef<() => void>(() => {});
@@ -1052,13 +1315,13 @@ export default function TorontoCityViewer({
       unlockFlyRef.current();
       zoomActive = false;
 
-      // Frame near the nameplate (typically ~h+22), not a wide skyline pullback.
-      const plateY = target.h + 22;
+      // Frame on the floating nameplate, not the old blue roof ring.
+      const plateY = target.plateY;
       const lookY = Math.max(18, plateY);
       const dist = Math.max(36, Math.min(95, target.h * 0.22 + 42));
       const toPos = new Vector3(
         target.x + dist * 0.65,
-        Math.max(28, plateY + dist * 0.12),
+        Math.max(28, plateY + dist * 0.18),
         target.z + dist * 0.78,
       );
       const toLook = new Vector3(target.x, lookY, target.z);
@@ -1210,7 +1473,7 @@ export default function TorontoCityViewer({
 
     (async () => {
       try {
-        const { data, fromTiger } = await loadMassingData();
+        const [{ data, fromTiger }, gridData] = await Promise.all([loadMassingData(), loadGrid()]);
         if (disposed) return;
 
         const electric = data.buildings.filter(isElectrifiedBuilding);
@@ -1233,18 +1496,29 @@ export default function TorontoCityViewer({
         const cn = data.landmarks?.cnTower;
         city.add(buildCnTower(cn?.x ?? 0, cn?.z ?? 0));
         scene.add(city);
+        if (gridData) {
+          const grid = buildGridMesh(gridData, electric);
+          grid.visible = gridVisible;
+          gridRef.current = grid;
+          scene.add(grid);
+        }
         setLabeled(matches.length);
         setSearchTargets(
-          matches.map((m) => ({
-            id: m.landmark.id,
-            name: m.landmark.name,
-            short: m.landmark.short,
-            kind: m.landmark.kind ?? 'structure',
-            x: m.x,
-            z: m.z,
-            h: m.h,
-            footprint_m2: m.footprint_m2,
-          })),
+          matches.map((m) => {
+            const building =
+              m.buildingIndex >= 0 ? electric[m.buildingIndex] : undefined;
+            return {
+              id: m.landmark.id,
+              name: m.landmark.name,
+              short: m.landmark.short,
+              kind: m.landmark.kind ?? 'structure',
+              x: m.x,
+              z: m.z,
+              h: m.h,
+              plateY: landmarkNameplateY(m, building),
+              footprint_m2: m.footprint_m2,
+            };
+          }),
         );
         ready = true;
         setCityReady(true);
@@ -1278,6 +1552,7 @@ export default function TorontoCityViewer({
         highlight.geometry.dispose();
         (highlight.material as MeshBasicMaterial).dispose();
       }
+      gridRef.current = null;
       if (city) {
         city.traverse((obj) => {
           if (obj instanceof Mesh || obj instanceof InstancedMesh) {
@@ -1305,6 +1580,10 @@ export default function TorontoCityViewer({
     };
   }, []);
 
+  useEffect(() => {
+    if (gridRef.current) gridRef.current.visible = gridVisible;
+  }, [gridVisible]);
+
   const exploreUi = mode === 'explore';
 
   return (
@@ -1314,12 +1593,35 @@ export default function TorontoCityViewer({
       {exploreUi && (
         <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-start justify-between gap-4 p-4">
           <div className="pointer-events-auto">
-            <Link
-              to="/"
-              className="rounded-md border border-nc-border/80 bg-nc-panel/80 px-3 py-1.5 text-sm backdrop-blur-md transition hover:border-nc-renew"
-            >
-              ← NightCity
-            </Link>
+            <div className="flex items-center gap-3">
+              <Link
+                to="/"
+                className="rounded-md border border-nc-border/80 bg-nc-panel/80 px-3 py-1.5 text-sm backdrop-blur-md transition hover:border-nc-renew"
+              >
+                ← NightCity
+              </Link>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={gridVisible}
+                aria-label="Toggle grid"
+                onClick={() => setGridVisible((visible) => !visible)}
+                className="flex items-center gap-3 rounded-md border border-nc-border/60 bg-nc-panel/70 px-3 py-2 text-xs uppercase tracking-[0.16em] text-nc-text backdrop-blur-md transition hover:border-cyan-300/70"
+              >
+                <span>Power Grid</span>
+                <span
+                  className={`relative h-6 w-12 rounded-full transition ${
+                    gridVisible ? 'bg-cyan-400/80' : 'bg-slate-600/80'
+                  }`}
+                >
+                  <span
+                    className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition-[left] ${
+                      gridVisible ? 'left-7' : 'left-1'
+                    }`}
+                  />
+                </span>
+              </button>
+            </div>
           </div>
           <div className="rounded-md border border-nc-border/60 bg-nc-panel/70 px-3 py-2 text-right backdrop-blur-md">
             <div className="text-sm font-semibold tracking-wide">Toronto</div>

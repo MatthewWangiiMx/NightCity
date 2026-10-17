@@ -190,6 +190,7 @@ def row_to_massing_building(row: dict[str, Any]) -> dict[str, Any] | None:
     )
     return {
         "id": row["id"],
+        "node_id": row.get("node_id"),
         "h": cons["h"],
         "levels": cons["levels"],
         "floors_estimated": cons["floors_estimated"],

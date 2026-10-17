@@ -194,6 +194,7 @@ def main() -> None:
         floors = max(1, int(round(height / 3.2)))
         buildings.append(
             {
+                "id": str(rec.get("OBJECTID") or rec.get("ID") or len(buildings)),
                 "h": round(height, 2),
                 "levels": floors,
                 "floors_estimated": True,

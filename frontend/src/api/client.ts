@@ -28,7 +28,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export type MassingBuilding = {
-  id?: number;
+  id?: number | string;
+  node_id?: string;
   h: number;
   levels?: number;
   floors_estimated?: boolean;

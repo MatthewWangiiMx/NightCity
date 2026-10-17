@@ -1,54 +1,31 @@
 import { Link } from 'react-router-dom';
 import DistrictMap from '@/components/map/DistrictMap';
-import Panel from '@/components/Panel';
-import GridStatusPanel from '@/components/panels/GridStatusPanel';
-import DemandVsRenewables from '@/components/charts/DemandVsRenewables';
-import ScenarioComparison from '@/components/panels/ScenarioComparison';
 import { Wordmark } from '@/components/AppShell';
 import { demoRun } from '@/demo/fixtures';
 
 const MODES = [
   { to: '/simulate', icon: '▶', label: 'Simulate', blurb: 'Trigger an event' },
-  { to: '/explore', icon: '◎', label: 'Explore', blurb: 'Inspect the district' },
+  { to: '/explore', icon: '◎', label: 'Explore City', blurb: 'Fly Toronto massing' },
   { to: '/plan', icon: '⚙', label: 'Plan', blurb: 'Tune and apply' },
 ];
 
 /**
- * The city is the home screen: the live dashboard sits behind, inert, and the
- * three modes are the only things you can click.
+ * The city is the home screen: buildings fill the viewport as the background,
+ * and the three modes are the only things you can click.
  */
 export default function Home() {
   const run = demoRun();
 
   return (
-    <div className="relative min-h-[calc(100vh-2rem)] overflow-hidden rounded-2xl border border-nc-border">
+    <div className="relative min-h-screen overflow-hidden">
       <DistrictMap
         district={run.district}
         className="absolute inset-0 h-full w-full rounded-none border-0"
       />
-      <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-nc-bg/75 via-nc-bg/25 to-nc-bg/85" />
-
-      {/* Dashboard preview — visible, not interactive */}
-      {/* Panels start below the wordmark, which is pinned to the same corner */}
-      <div className="pointer-events-none absolute inset-0 hidden flex-col justify-between p-5 pt-28 opacity-70 lg:flex">
-        <div className="flex items-start justify-between gap-4">
-          <div className="w-[320px] space-y-4">
-            <GridStatusPanel status={run.grid_status} scenario={run.scenario} />
-            <Panel title="Demand vs Renewable Generation" subtitle="MW across the evening window">
-              <DemandVsRenewables steps={run.optimized} height={150} />
-            </Panel>
-          </div>
-          <div className="w-[340px]">
-            <ScenarioComparison
-              baseline={run.baseline_metrics}
-              optimized={run.optimized_metrics}
-            />
-          </div>
-        </div>
-      </div>
+      <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-nc-bg/55 via-nc-bg/15 to-nc-bg/70" />
 
       {/* Foreground */}
-      <div className="relative flex min-h-[calc(100vh-2rem)] flex-col items-center justify-center gap-12 px-6 py-16 text-center">
+      <div className="relative flex min-h-screen flex-col items-center justify-center gap-12 px-6 py-16 text-center">
         <div className="lg:absolute lg:left-6 lg:top-5 lg:text-left">
           <Wordmark size="lg" />
         </div>

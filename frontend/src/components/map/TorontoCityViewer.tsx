@@ -1585,7 +1585,7 @@ export default function TorontoCityViewer({
                 onClick={() => setGridVisible((visible) => !visible)}
                 className="flex items-center gap-3 rounded-md border border-nc-border/60 bg-nc-panel/70 px-3 py-2 text-xs uppercase tracking-[0.16em] text-nc-text backdrop-blur-md transition hover:border-cyan-300/70"
               >
-                <span>Powergrid</span>
+                <span>Power Grid</span>
                 <span
                   className={`relative h-6 w-12 rounded-full transition ${
                     gridVisible ? 'bg-cyan-400/80' : 'bg-slate-600/80'

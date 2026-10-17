@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   AmbientLight,
+  BufferGeometry,
   BoxGeometry,
   Color,
   CylinderGeometry,
@@ -11,6 +12,8 @@ import {
   Group,
   HemisphereLight,
   InstancedMesh,
+  Line,
+  LineBasicMaterial,
   type Material,
   Matrix4,
   Mesh,
@@ -43,6 +46,7 @@ import {
 
 const MASSING_CACHE_URL = '/data/toronto-massing.json';
 const MASSING_API_URL = '/api/buildings/massing';
+const GRID_URL = '/data/grid.json';
 
 /** Only keep structures tall enough to be occupied / electrified buildings. */
 const MIN_ELECTRIC_HEIGHT_M = 10;
@@ -98,7 +102,8 @@ const KEY_MAP: Record<string, KeyAction> = {
 };
 
 type MassingBuilding = {
-  id?: number;
+  id?: number | string;
+  node_id?: string;
   h: number;
   levels?: number;
   floors_estimated?: boolean;
@@ -109,6 +114,59 @@ type MassingBuilding = {
   bldg_src?: string | null;
   rings: [number, number][][];
 };
+
+type GridNode = {
+  node_id: string;
+  node_type: 'substation' | 'feeder' | 'transformer';
+  x: number;
+  z: number;
+};
+
+type GridEdge = {
+  parent_id: string;
+  child_id: string;
+  is_tie: boolean;
+  normally_open: boolean;
+};
+
+type GridData = { nodes: GridNode[]; edges: GridEdge[] };
+
+async function loadGrid(): Promise<GridData | null> {
+  try {
+    const res = await fetch(GRID_URL);
+    if (!res.ok) return null;
+    const data = (await res.json()) as GridData;
+    return data.nodes?.length && data.edges ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildGridMesh(data: GridData): Group {
+  const group = new Group();
+  group.name = 'distribution-grid';
+  const byId = new Map(data.nodes.map((node) => [node.node_id, node]));
+  const lineMaterial = new LineBasicMaterial({ color: '#22d3ee', transparent: true, opacity: 0.65 });
+  const tieMaterial = new LineBasicMaterial({ color: '#fbbf24', transparent: true, opacity: 0.75 });
+  for (const edge of data.edges) {
+    const parent = byId.get(edge.parent_id);
+    const child = byId.get(edge.child_id);
+    if (!parent || !child) continue;
+    const geometry = new BufferGeometry().setFromPoints([
+      new Vector3(parent.x, 3, parent.z),
+      new Vector3(child.x, 3, child.z),
+    ]);
+    group.add(new Line(geometry, edge.normally_open ? tieMaterial : lineMaterial));
+  }
+  for (const node of data.nodes) {
+    const color = node.node_type === 'substation' ? '#fbbf24' : node.node_type === 'feeder' ? '#a78bfa' : '#22d3ee';
+    const puck = new Mesh(new SphereGeometry(node.node_type === 'substation' ? 4 : 2.2, 12, 8),
+      new MeshBasicMaterial({ color }));
+    puck.position.set(node.x, 4, node.z);
+    group.add(puck);
+  }
+  return group;
+}
 
 type MassingData = {
   source: string;
@@ -340,7 +398,7 @@ function addLandmarkExtras(match: MatchedLandmark, group: Group) {
 
 export type BuildingPick = {
   buildingIndex: number;
-  buildingId?: number;
+  buildingId?: number | string;
   name: string;
   kind: string;
   h: number;
@@ -1003,6 +1061,7 @@ export default function TorontoCityViewer({
     let controls: PointerLockControls | null = null;
     let renderer: WebGLRenderer | null = null;
     let city: Group | null = null;
+    let grid: Group | null = null;
     let hitTargets: Group | null = null;
     let signs: Sprite[] = [];
     let highlight: Mesh | null = null;
@@ -1307,7 +1366,7 @@ export default function TorontoCityViewer({
 
     (async () => {
       try {
-        const { data, fromTiger } = await loadMassingData();
+        const [{ data, fromTiger }, gridData] = await Promise.all([loadMassingData(), loadGrid()]);
         if (disposed) return;
 
         const electric = data.buildings.filter(isElectrifiedBuilding);
@@ -1330,6 +1389,10 @@ export default function TorontoCityViewer({
         const cn = data.landmarks?.cnTower;
         city.add(buildCnTower(cn?.x ?? 0, cn?.z ?? 0));
         scene.add(city);
+        if (gridData) {
+          grid = buildGridMesh(gridData);
+          scene.add(grid);
+        }
         setLabeled(matches.length);
         setSearchTargets(
           matches.map((m) => ({

@@ -22,32 +22,28 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const path = useLocation().pathname;
   const onHome = path === '/';
   const onExploreCity = path === '/explore';
+  const onPlan = path === '/plan';
   const fullBleed = onHome || onExploreCity;
+  const cityBackdrop = onPlan;
 
   return (
     <div className="flex min-h-full flex-col">
       {!fullBleed && (
-        <header className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-nc-border/80 bg-nc-panel/40 px-6 py-3 backdrop-blur-md">
+        <header className="relative z-20 flex flex-wrap items-center gap-x-8 gap-y-2 border-b border-nc-border/60 bg-nc-panel/55 px-6 py-3">
           <NavLink to="/">
             <Wordmark />
           </NavLink>
 
-          <div className="hidden h-8 w-px bg-nc-border sm:block" />
-          <p className="hidden text-xs text-nc-muted sm:block">
-            Smarter dispatch. Cleaner energy.
-            <span className="block text-[11px] text-nc-muted/70">A more resilient tomorrow.</span>
-          </p>
-
-          <nav className="flex gap-1 text-sm">
+          <nav className="flex items-center gap-6 text-sm font-mode">
             {NAV.map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}
                 className={({ isActive }) =>
-                  `rounded-md px-3 py-1.5 transition ${
+                  `pb-0.5 transition-colors ${
                     isActive
-                      ? 'bg-nc-panel text-nc-text ring-1 ring-nc-renew/40'
-                      : 'text-nc-muted hover:bg-nc-panel/60 hover:text-nc-text'
+                      ? 'text-nc-text border-b border-nc-text'
+                      : 'text-nc-muted border-b border-transparent hover:text-nc-text'
                   }`
                 }
               >
@@ -55,14 +51,12 @@ export default function AppShell({ children }: { children: ReactNode }) {
               </NavLink>
             ))}
           </nav>
-
-          <span className="ml-auto rounded border border-nc-border px-2 py-1 text-[10px] uppercase tracking-wide text-nc-muted">
-            Simulated digital twin — illustrative data
-          </span>
         </header>
       )}
 
-      <main className={`flex-1 ${fullBleed ? '' : 'p-4'}`}>{children}</main>
+      <main className={`flex-1 ${fullBleed || cityBackdrop ? '' : 'p-4'} ${cityBackdrop ? 'relative' : ''}`}>
+        {children}
+      </main>
     </div>
   );
 }

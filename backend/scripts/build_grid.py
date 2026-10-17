@@ -28,6 +28,7 @@ TRANSFORMER_COUNT = 30
 FEEDER_COUNT = 5
 TIE_COUNT = 3
 HEADROOM = 1.25
+DOWNTOWN_BBOX = (-79.41, 43.63, -79.36, 43.66)
 
 DDL = """
 DROP TABLE IF EXISTS building_nodes;
@@ -81,9 +82,16 @@ def database_url() -> str:
 def _bbox(session) -> tuple[float, float, float, float]:
     row = session.execute(
         text(
-            "SELECT ST_XMin(extent), ST_YMin(extent), ST_XMax(extent), ST_YMax(extent) "
-            "FROM (SELECT ST_3DExtent(geom) AS extent FROM buildings) b"
-        )
+            """
+            SELECT ST_XMin(extent), ST_YMin(extent), ST_XMax(extent), ST_YMax(extent)
+            FROM (
+                SELECT ST_3DExtent(geom) AS extent
+                FROM buildings
+                WHERE geom && ST_MakeEnvelope(:min_x, :min_y, :max_x, :max_y, 4326)
+            ) b
+            """
+        ),
+        dict(zip(("min_x", "min_y", "max_x", "max_y"), DOWNTOWN_BBOX)),
     ).one()
     if any(value is None for value in row):
         raise RuntimeError("buildings has no geometry")
@@ -189,8 +197,10 @@ def build(url: str, massing_path: Path = MASSING_PATH, grid_path: Path = GRID_PA
         for node_id, load in subtree.items():
             feeder_load[feeder_for[node_id]] += load
         total = sum(feeder_load.values())
+        feeder_centroid_x = sum(p[1] for p in transformer_points) / len(transformer_points)
+        feeder_centroid_z = sum(p[2] for p in transformer_points) / len(transformer_points)
         nodes = [{"node_id": "substation-01", "node_type": "substation", "parent_id": None,
-                  "x": 0.0, "z": 0.0, "peak_kw": total}]
+                  "x": feeder_centroid_x, "z": feeder_centroid_z, "peak_kw": total}]
         for feeder_id in sorted(feeder_load):
             points = [p for p in transformer_points if feeder_for[p[0]] == feeder_id]
             nodes.append({"node_id": feeder_id, "node_type": "feeder", "parent_id": "substation-01",

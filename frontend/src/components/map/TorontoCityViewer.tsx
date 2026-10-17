@@ -146,8 +146,18 @@ function buildGridMesh(data: GridData): Group {
   const group = new Group();
   group.name = 'distribution-grid';
   const byId = new Map(data.nodes.map((node) => [node.node_id, node]));
-  const lineMaterial = new LineBasicMaterial({ color: '#22d3ee', transparent: true, opacity: 0.65 });
-  const tieMaterial = new LineBasicMaterial({ color: '#fbbf24', transparent: true, opacity: 0.75 });
+  const lineMaterial = new LineBasicMaterial({
+    color: '#22d3ee',
+    transparent: true,
+    opacity: 0.65,
+    depthTest: false,
+  });
+  const tieMaterial = new LineBasicMaterial({
+    color: '#fbbf24',
+    transparent: true,
+    opacity: 0.75,
+    depthTest: false,
+  });
   for (const edge of data.edges) {
     const parent = byId.get(edge.parent_id);
     const child = byId.get(edge.child_id);
@@ -159,10 +169,19 @@ function buildGridMesh(data: GridData): Group {
     group.add(new Line(geometry, edge.normally_open ? tieMaterial : lineMaterial));
   }
   for (const node of data.nodes) {
-    const color = node.node_type === 'substation' ? '#fbbf24' : node.node_type === 'feeder' ? '#a78bfa' : '#22d3ee';
-    const puck = new Mesh(new SphereGeometry(node.node_type === 'substation' ? 4 : 2.2, 12, 8),
-      new MeshBasicMaterial({ color }));
-    puck.position.set(node.x, 4, node.z);
+    const color =
+      node.node_type === 'substation'
+        ? '#fbbf24'
+        : node.node_type === 'feeder'
+          ? '#a78bfa'
+          : '#22d3ee';
+    const radius = node.node_type === 'substation' ? 18 : node.node_type === 'feeder' ? 12 : 7;
+    const puck = new Mesh(
+      new SphereGeometry(radius, 16, 10),
+      new MeshBasicMaterial({ color, depthTest: false }),
+    );
+    puck.renderOrder = 20;
+    puck.position.set(node.x, 12, node.z);
     group.add(puck);
   }
   return group;

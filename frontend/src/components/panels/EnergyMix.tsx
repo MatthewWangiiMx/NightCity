@@ -1,12 +1,11 @@
 import Panel from '@/components/Panel';
-import Placeholder from '@/components/Placeholder';
-import type { TimeStep } from '@/api/types';
+import EnergyMixDonut from '@/components/charts/EnergyMixDonut';
+import { ENERGY_MIX } from '@/demo/fixtures';
 
-/** TODO: donut of solar / wind / battery / imported mix over the window. */
-export default function EnergyMix({ steps }: { steps?: TimeStep[] }) {
+export default function EnergyMix({ renewablePct }: { renewablePct: number }) {
   return (
-    <Panel title="Energy Mix">
-      <Placeholder label={steps?.length ? 'Energy mix donut' : 'Awaiting run'} height={120} />
+    <Panel title="Energy Mix" subtitle="Share of supply across the window">
+      <EnergyMixDonut mix={ENERGY_MIX} renewablePct={renewablePct} />
     </Panel>
   );
 }

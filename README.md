@@ -17,14 +17,17 @@ backend/            FastAPI + deterministic simulator + heuristic optimizer
   app/db/           TigerData session, repository, migrations/001_init.sql
   app/llm/          optional Claude explanation layer (never authoritative)
 frontend/           React + TypeScript + Vite + Tailwind
-  src/pages/        Command Center, What-if Lab, Dispatch Review, Building Detail, Results
-  src/components/   map/, charts/, panels/
-  src/hooks/        useDistrict, useSimulation, usePlayback
+  src/pages/        Home, Explore, Simulate, Plan, Building Detail
+  src/components/   map/ (isometric district + timeline), charts/ (Recharts), panels/
+  src/demo/         hardcoded run data, standing in for the simulator
+  src/hooks/        useRun (API with demo fallback), usePlayback
 docs/               METRICS.md (equations), TIGERDATA.md (database setup)
 ```
 
-This is a **skeleton**: contracts, routing, layout and wiring are in place; the simulator,
-optimizer, charts and map visuals raise `NotImplementedError` / render placeholders.
+The front end is complete against **hardcoded demo data** in `src/demo/fixtures.ts`. The backend
+simulator and optimizer still raise `NotImplementedError`, so `/api/simulation/run` returns 501 and
+`useRun` falls back to the fixtures. When the simulator lands, the UI switches to live output with
+no component changes.
 
 ## Run it
 

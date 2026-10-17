@@ -1,20 +1,20 @@
 import { Route, Routes } from 'react-router-dom';
 import AppShell from '@/components/AppShell';
-import CommandCenter from '@/pages/CommandCenter';
-import WhatIfLab from '@/pages/WhatIfLab';
-import DispatchReview from '@/pages/DispatchReview';
+import Home from '@/pages/Home';
+import Explore from '@/pages/Explore';
+import Simulate from '@/pages/Simulate';
+import Plan from '@/pages/Plan';
 import BuildingDetail from '@/pages/BuildingDetail';
-import Results from '@/pages/Results';
 
 export default function App() {
   return (
     <AppShell>
       <Routes>
-        <Route path="/" element={<CommandCenter />} />
-        <Route path="/what-if" element={<WhatIfLab />} />
-        <Route path="/dispatch" element={<DispatchReview />} />
+        <Route path="/" element={<Home />} />
+        <Route path="/explore" element={<Explore />} />
+        <Route path="/simulate" element={<Simulate />} />
+        <Route path="/plan" element={<Plan />} />
         <Route path="/building/:buildingId" element={<BuildingDetail />} />
-        <Route path="/results" element={<Results />} />
       </Routes>
     </AppShell>
   );

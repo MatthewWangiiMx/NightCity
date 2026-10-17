@@ -1,23 +1,135 @@
 @import "tailwindcss";
 
-/* Night City palette: dark control-room surface, cyan grid, green renewable,
-   amber flexible load, red disruption. */
+/* Night City palette.
+   UI chrome keeps the neon control-room look; chart series use the steps below,
+   which are validated for the dark surface (lightness band, chroma floor,
+   colorblind separation, contrast). Do not swap a series hue without re-running
+   the palette validator against --color-nc-panel. */
 @theme {
   --color-nc-bg: #06131c;
   --color-nc-panel: #0b1f2b;
+  --color-nc-panel-2: #0f2a38;
   --color-nc-border: #16384a;
   --color-nc-text: #dbeef5;
   --color-nc-muted: #7fa6b6;
-  --color-nc-grid: #38bdf8;      /* grid flow */
-  --color-nc-renew: #34d399;     /* renewable flow */
-  --color-nc-flex: #fbbf24;      /* flexible load */
-  --color-nc-alert: #f05252;     /* disruption */
+
+  /* UI accents (chrome, map flows, status) */
+  --color-nc-grid: #38bdf8;
+  --color-nc-renew: #34d399;
+  --color-nc-flex: #fbbf24;
+  --color-nc-alert: #f05252;
+
+  /* Chart series — validated on the #0b1f2b surface */
+  --color-series-demand: #3987e5;
+  --color-series-renew: #199e70;
+  --color-series-solar: #c98500;
+  --color-series-neutral: #8a9aa5; /* baseline reference / remainder, always direct-labeled */
 }
 
-html, body, #root { height: 100%; }
+html,
+body,
+#root {
+  height: 100%;
+}
+
 body {
   margin: 0;
   background: var(--color-nc-bg);
   color: var(--color-nc-text);
   font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+}
+
+/* Energy flowing along a path on the district map. */
+@keyframes nc-flow {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+
+.nc-flow {
+  stroke-dasharray: 6 10;
+  animation: nc-flow 1.4s linear infinite;
+}
+
+@keyframes nc-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+
+.nc-pulse {
+  animation: nc-pulse 2.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nc-flow,
+  .nc-pulse {
+    animation: none;
+  }
+}
+
+/* Range inputs: the browser default track hides anything drawn beneath it, so
+   the track is painted here and the element itself is transparent. */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 20px;
+  background: transparent;
+  cursor: pointer;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--color-nc-panel-2);
+}
+
+input[type="range"]::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--color-nc-panel-2);
+}
+
+input[type="range"]::-moz-range-progress {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--color-nc-renew);
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  margin-top: -5px;
+  height: 16px;
+  width: 16px;
+  border-radius: 999px;
+  background: var(--color-nc-renew);
+  border: 2px solid var(--color-nc-bg);
+  box-shadow: 0 0 10px rgba(52, 211, 153, 0.6);
+}
+
+input[type="range"]::-moz-range-thumb {
+  height: 16px;
+  width: 16px;
+  border-radius: 999px;
+  background: var(--color-nc-renew);
+  border: 2px solid var(--color-nc-bg);
+}
+
+/* The timeline paints its own two-tone track behind a transparent input. */
+input[type="range"].nc-track-none::-webkit-slider-runnable-track {
+  background: transparent;
+}
+
+input[type="range"].nc-track-none::-moz-range-track {
+  background: transparent;
+}
+
+input[type="range"].nc-track-none::-moz-range-progress {
+  background: transparent;
 }

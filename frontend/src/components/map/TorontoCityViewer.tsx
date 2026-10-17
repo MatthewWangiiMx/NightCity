@@ -61,9 +61,11 @@ const WIN_GAP_X = 1.1;
 const WIN_LIT_CHANCE = 0.5;
 const SIGN_VISIBLE_M = 1100;
 
-export type CityViewMode = 'preview' | 'zoom' | 'explore';
+export type CityViewMode = 'preview' | 'zoom' | 'explore' | 'backdrop';
 
 const PREVIEW_LOOK = new Vector3(40, 90, -80);
+/** Fixed cinematic frame for Plan / static backdrops (no orbit). */
+const BACKDROP_POS = new Vector3(620, 280, 720);
 const EXPLORE_POS = new Vector3(80, 140, 520);
 const EXPLORE_LOOK = new Vector3(0, 180, 0);
 const ZOOM_MS = 1600;
@@ -510,7 +512,9 @@ function buildCityMesh(
   buildings: MassingBuilding[],
   matches: MatchedLandmark[],
   dataSource: BuildingPick['data_source'] = 'massing-cache',
+  opts?: { showLabels?: boolean },
 ): { group: Group; signs: Sprite[]; hitTargets: Group } {
+  const showLabels = opts?.showLabels !== false;
   const group = new Group();
   const signs: Sprite[] = [];
   const hitTargets = new Group();
@@ -652,71 +656,74 @@ function buildCityMesh(
   }
 
   // Named landmarks only — massing/TigerData rows have no building names.
-  for (const match of matches) {
-    const building =
-      match.buildingIndex >= 0 ? buildings[match.buildingIndex] : undefined;
-    const visual = building ? buildingVisualTop(building) : null;
-    // Sit on the true mesh top (including black crown), not avg-height mid-roof.
-    const roofY = visual?.buildH ?? match.h;
-    const hasCrown = (visual?.crownH ?? 0) > 0;
+  // Backdrop / silent modes skip plates and HUD rings (buildings + windows only).
+  if (showLabels) {
+    for (const match of matches) {
+      const building =
+        match.buildingIndex >= 0 ? buildings[match.buildingIndex] : undefined;
+      const visual = building ? buildingVisualTop(building) : null;
+      // Sit on the true mesh top (including black crown), not avg-height mid-roof.
+      const roofY = visual?.buildH ?? match.h;
+      const hasCrown = (visual?.crownH ?? 0) > 0;
 
-    if (match.landmark.id !== 'cn-tower') addLandmarkExtras(match, group, roofY);
-    else {
-      const cnHit = new Mesh(new CylinderGeometry(18, 22, 553, 12), hitMat);
-      cnHit.position.set(match.x, 276, match.z);
-      cnHit.userData.pick = {
-        buildingIndex: -1,
-        name: 'CN Tower',
-        kind: 'landmark',
-        h: 553,
-        footprint_m2: match.footprint_m2,
-        x: match.x,
-        z: match.z,
-        levels: 147,
-        floors_estimated: true,
-        avg_h: 553,
-        max_h: 553,
-        min_h: null,
-        height_src: 'Landmark reference',
-        bldg_src: 'CN Tower',
-        data_source: dataSource,
-      } satisfies BuildingPick;
-      hitTargets.add(cnHit);
+      if (match.landmark.id !== 'cn-tower') addLandmarkExtras(match, group, roofY);
+      else {
+        const cnHit = new Mesh(new CylinderGeometry(18, 22, 553, 12), hitMat);
+        cnHit.position.set(match.x, 276, match.z);
+        cnHit.userData.pick = {
+          buildingIndex: -1,
+          name: 'CN Tower',
+          kind: 'landmark',
+          h: 553,
+          footprint_m2: match.footprint_m2,
+          x: match.x,
+          z: match.z,
+          levels: 147,
+          floors_estimated: true,
+          avg_h: 553,
+          max_h: 553,
+          min_h: null,
+          height_src: 'Landmark reference',
+          bldg_src: 'CN Tower',
+          data_source: dataSource,
+        } satisfies BuildingPick;
+        hitTargets.add(cnHit);
+      }
+
+      const label = match.landmark.short ?? match.landmark.name;
+      const kind = (match.landmark.kind ?? 'structure').toUpperCase();
+      const sign = createFuturisticSign(label, kind);
+      const sx = match.x;
+      const sz = match.z;
+      const lift = landmarkNameplateY(match, building);
+
+      // Rogers Centre: centre of the roof, plate forced visible above the stand.
+      if (match.landmark.id === 'rogers-centre') {
+        const mat = sign.material as SpriteMaterial;
+        mat.depthTest = false;
+        mat.depthWrite = false;
+        mat.fog = false;
+        mat.needsUpdate = true;
+        sign.renderOrder = 20;
+        const base = sign.userData.baseScale as { x: number; y: number };
+        sign.scale.set(base.x * 1.35, base.y * 1.35, 1);
+        sign.userData.baseScale = { x: base.x * 1.35, y: base.y * 1.35 };
+      }
+
+      // Crowned towers: keep the plate above the black cap in the middle.
+      if (hasCrown && match.landmark.id !== 'cn-tower') {
+        const mat = sign.material as SpriteMaterial;
+        mat.depthTest = false;
+        mat.depthWrite = false;
+        mat.needsUpdate = true;
+        sign.renderOrder = 15;
+      }
+
+      sign.position.set(sx, lift, sz);
+      sign.userData.anchor = { x: sx, y: lift, z: sz };
+      group.add(sign);
+      signs.push(sign);
     }
-
-    const label = match.landmark.short ?? match.landmark.name;
-    const kind = (match.landmark.kind ?? 'structure').toUpperCase();
-    const sign = createFuturisticSign(label, kind);
-    const sx = match.x;
-    const sz = match.z;
-    const lift = landmarkNameplateY(match, building);
-
-    // Rogers Centre: centre of the roof, plate forced visible above the stand.
-    if (match.landmark.id === 'rogers-centre') {
-      const mat = sign.material as SpriteMaterial;
-      mat.depthTest = false;
-      mat.depthWrite = false;
-      mat.fog = false;
-      mat.needsUpdate = true;
-      sign.renderOrder = 20;
-      const base = sign.userData.baseScale as { x: number; y: number };
-      sign.scale.set(base.x * 1.35, base.y * 1.35, 1);
-      sign.userData.baseScale = { x: base.x * 1.35, y: base.y * 1.35 };
-    }
-
-    // Crowned towers: keep the plate above the black cap in the middle.
-    if (hasCrown && match.landmark.id !== 'cn-tower') {
-      const mat = sign.material as SpriteMaterial;
-      mat.depthTest = false;
-      mat.depthWrite = false;
-      mat.needsUpdate = true;
-      sign.renderOrder = 15;
-    }
-
-    sign.position.set(sx, lift, sz);
-    sign.userData.anchor = { x: sx, y: lift, z: sz };
-    group.add(sign);
-    signs.push(sign);
   }
 
   group.add(hitTargets);
@@ -1098,6 +1105,7 @@ export default function TorontoCityViewer({
   const [gridVisible, setGridVisible] = useState(true);
   const [searchTargets, setSearchTargets] = useState<SearchTarget[]>([]);
   const gridRef = useRef<Group | null>(null);
+  const gridVisibleRef = useRef(gridVisible);
   const selectRef = useRef<(pick: BuildingPick | null) => void>(() => {});
   const flyToRef = useRef<(target: SearchTarget) => void>(() => {});
   const unlockFlyRef = useRef<() => void>(() => {});
@@ -1105,6 +1113,10 @@ export default function TorontoCityViewer({
   useEffect(() => {
     modeRef.current = mode;
   }, [mode]);
+
+  useEffect(() => {
+    gridVisibleRef.current = gridVisible;
+  }, [gridVisible]);
 
   useEffect(() => {
     onZoomCompleteRef.current = onZoomComplete;
@@ -1169,8 +1181,8 @@ export default function TorontoCityViewer({
     scene.fog = new Fog('#02060d', 500, 2600);
 
     const camera = new PerspectiveCamera(68, 1, 0.8, 5000);
-    // Start in cinematic preview framing (farther / higher).
-    camera.position.set(620, 280, 720);
+    // Start in cinematic preview / backdrop framing (farther / higher).
+    camera.position.copy(BACKDROP_POS);
     camera.lookAt(PREVIEW_LOOK);
 
     renderer = new WebGLRenderer({
@@ -1362,6 +1374,11 @@ export default function TorontoCityViewer({
       if (viewMode === 'zoom' && lastMode !== 'zoom') beginZoom();
       lastMode = viewMode;
 
+      if (gridRef.current) {
+        const inCity = viewMode === 'explore' || viewMode === 'zoom';
+        gridRef.current.visible = inCity && gridVisibleRef.current;
+      }
+
       if (viewMode !== 'explore' && controls.isLocked) controls.unlock();
 
       if (searchFly && viewMode === 'explore') {
@@ -1371,6 +1388,9 @@ export default function TorontoCityViewer({
         const look = new Vector3().lerpVectors(searchFly.fromLook, searchFly.toLook, e);
         camera.lookAt(look);
         if (u >= 1) searchFly = null;
+      } else if (viewMode === 'backdrop' && ready) {
+        camera.position.copy(BACKDROP_POS);
+        camera.lookAt(PREVIEW_LOOK);
       } else if (viewMode === 'preview' && ready && !zoomActive) {
         const t = now * 0.00012;
         const radius = 780;
@@ -1425,7 +1445,7 @@ export default function TorontoCityViewer({
       }
 
       // Distance-scale futuristic signs so names stay readable in flight.
-      const showSigns = viewMode !== 'preview';
+      const showSigns = viewMode === 'explore' || viewMode === 'zoom';
       for (const sign of signs) {
         if (!showSigns) {
           sign.visible = false;
@@ -1450,11 +1470,19 @@ export default function TorontoCityViewer({
 
     (async () => {
       try {
-        const [{ data, fromTiger }, gridData] = await Promise.all([loadMassingData(), loadGrid()]);
+        const isBackdrop = modeRef.current === 'backdrop';
+        // Home preview pans without the distribution grid; Explore / Plan-backdrop
+        // decide separately (backdrop never loads it).
+        const [{ data, fromTiger }, gridData] = await Promise.all([
+          loadMassingData(),
+          isBackdrop ? Promise.resolve(null) : loadGrid(),
+        ]);
         if (disposed) return;
 
         const electric = data.buildings.filter(isElectrifiedBuilding);
-        setStatus(`Labeling Toronto landmarks across ${electric.length.toLocaleString()} buildings…`);
+        if (!isBackdrop) {
+          setStatus(`Labeling Toronto landmarks across ${electric.length.toLocaleString()} buildings…`);
+        }
         setCredit(
           fromTiger
             ? `TigerData · ${data.license}`
@@ -1465,7 +1493,12 @@ export default function TorontoCityViewer({
         if (disposed) return;
 
         const matches = matchLandmarksToBuildings(electric);
-        const built = buildCityMesh(electric, matches, fromTiger ? 'tigerdata' : 'massing-cache');
+        const built = buildCityMesh(
+          electric,
+          matches,
+          fromTiger ? 'tigerdata' : 'massing-cache',
+          { showLabels: !isBackdrop },
+        );
         city = built.group;
         signs = built.signs;
         hitTargets = built.hitTargets;
@@ -1474,29 +1507,34 @@ export default function TorontoCityViewer({
         city.add(buildCnTower(cn?.x ?? 0, cn?.z ?? 0));
         scene.add(city);
         if (gridData) {
-          const grid = buildGridMesh(gridData, electric);
-          grid.visible = gridVisible;
-          gridRef.current = grid;
-          scene.add(grid);
+          const mesh = buildGridMesh(gridData, electric);
+          // Hidden on home cinematic pan; Explore respects the Power Grid toggle.
+          const inCity =
+            modeRef.current === 'explore' || modeRef.current === 'zoom';
+          mesh.visible = inCity && gridVisibleRef.current;
+          gridRef.current = mesh;
+          scene.add(mesh);
         }
-        setLabeled(matches.length);
-        setSearchTargets(
-          matches.map((m) => {
-            const building =
-              m.buildingIndex >= 0 ? electric[m.buildingIndex] : undefined;
-            return {
-              id: m.landmark.id,
-              name: m.landmark.name,
-              short: m.landmark.short,
-              kind: m.landmark.kind ?? 'structure',
-              x: m.x,
-              z: m.z,
-              h: m.h,
-              plateY: landmarkNameplateY(m, building),
-              footprint_m2: m.footprint_m2,
-            };
-          }),
-        );
+        setLabeled(isBackdrop ? 0 : matches.length);
+        if (!isBackdrop) {
+          setSearchTargets(
+            matches.map((m) => {
+              const building =
+                m.buildingIndex >= 0 ? electric[m.buildingIndex] : undefined;
+              return {
+                id: m.landmark.id,
+                name: m.landmark.name,
+                short: m.landmark.short,
+                kind: m.landmark.kind ?? 'structure',
+                x: m.x,
+                z: m.z,
+                h: m.h,
+                plateY: landmarkNameplateY(m, building),
+                footprint_m2: m.footprint_m2,
+              };
+            }),
+          );
+        }
         ready = true;
         setCityReady(true);
         setStatus('');
@@ -1505,6 +1543,9 @@ export default function TorontoCityViewer({
         if (modeRef.current === 'explore') {
           camera.position.copy(EXPLORE_POS);
           camera.lookAt(EXPLORE_LOOK);
+        } else if (modeRef.current === 'backdrop') {
+          camera.position.copy(BACKDROP_POS);
+          camera.lookAt(PREVIEW_LOOK);
         }
       } catch (err) {
         if (!disposed) {
@@ -1529,7 +1570,6 @@ export default function TorontoCityViewer({
         highlight.geometry.dispose();
         (highlight.material as MeshBasicMaterial).dispose();
       }
-      gridRef.current = null;
       if (city) {
         city.traverse((obj) => {
           if (obj instanceof Mesh || obj instanceof InstancedMesh) {
@@ -1547,6 +1587,17 @@ export default function TorontoCityViewer({
         });
         scene.remove(city);
       }
+      if (gridRef.current) {
+        gridRef.current.traverse((obj) => {
+          if (obj instanceof Mesh) {
+            obj.geometry.dispose();
+            const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+            mats.forEach((m) => m.dispose());
+          }
+        });
+        scene.remove(gridRef.current);
+        gridRef.current = null;
+      }
       renderer?.dispose();
       if (renderer?.domElement.parentElement === mount) {
         mount.removeChild(renderer.domElement);
@@ -1558,14 +1609,20 @@ export default function TorontoCityViewer({
   }, []);
 
   useEffect(() => {
-    if (gridRef.current) gridRef.current.visible = gridVisible;
-  }, [gridVisible]);
+    if (!gridRef.current) return;
+    const inCity = mode === 'explore' || mode === 'zoom';
+    gridRef.current.visible = inCity && gridVisible;
+  }, [gridVisible, mode]);
 
   const exploreUi = mode === 'explore';
+  const backdropUi = mode === 'backdrop';
 
   return (
     <div className="absolute inset-0 h-full w-full overflow-hidden bg-nc-bg">
-      <div ref={mountRef} className="absolute inset-0 [&>canvas]:block [&>canvas]:h-full [&>canvas]:w-full" />
+      <div
+        ref={mountRef}
+        className={`absolute inset-0 [&>canvas]:block [&>canvas]:h-full [&>canvas]:w-full ${backdropUi ? 'pointer-events-none' : ''}`}
+      />
 
       {exploreUi && (
         <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-start justify-between gap-4 p-4">
@@ -1624,7 +1681,7 @@ export default function TorontoCityViewer({
         <ElectricityPanel data={electricity} onClose={() => setElectricity(null)} />
       )}
 
-      {status && !error && mode !== 'zoom' && (
+      {status && !error && mode !== 'zoom' && mode !== 'backdrop' && (
         <div className="absolute left-1/2 top-1/2 z-20 -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-nc-border/80 bg-nc-panel/85 px-8 py-5 text-sm text-nc-muted backdrop-blur-md">
           {status}
         </div>

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import Panel from '@/components/Panel';
 import GridLoadProfile from '@/components/charts/GridLoadProfile';
 import EnergyMixDonut from '@/components/charts/EnergyMixDonut';
-import TorontoCityViewer from '@/components/map/TorontoCityViewer';
+import CityPageBackdrop from '@/components/map/CityPageBackdrop';
 import {
   PlanWeatherDayPicker,
   WeatherDayBar,
@@ -110,12 +110,8 @@ export default function Plan() {
   }
 
   return (
-    <div className="relative min-h-[calc(100vh-4.5rem)] overflow-hidden">
-      {/* Static city backdrop: buildings + lights only (no grid / labels). */}
-      <div className="pointer-events-none absolute inset-0 z-0" aria-hidden>
-        <TorontoCityViewer mode="backdrop" />
-        <div className="absolute inset-0 bg-gradient-to-b from-nc-bg/55 via-nc-bg/35 to-nc-bg/70" />
-      </div>
+    <div className="relative min-h-[calc(100vh-4.5rem)]">
+      <CityPageBackdrop />
 
       <div className="relative z-10">
         {!selectedDay ? (

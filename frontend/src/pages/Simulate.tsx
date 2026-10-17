@@ -2,6 +2,7 @@ import { useState } from 'react';
 import DistrictMap from '@/components/map/DistrictMap';
 import Timeline from '@/components/map/Timeline';
 import Panel from '@/components/Panel';
+import CityPageBackdrop from '@/components/map/CityPageBackdrop';
 import DispatchPlanPanel from '@/components/panels/DispatchPlanPanel';
 import ScenarioComparison from '@/components/panels/ScenarioComparison';
 import EmissionsAvoided from '@/components/panels/EmissionsAvoided';
@@ -50,7 +51,10 @@ export default function Simulate() {
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="relative min-h-[calc(100vh-4.5rem)]">
+      <CityPageBackdrop />
+
+      <div className="relative z-10 flex flex-col gap-4 p-4">
       <div className="flex flex-wrap items-center gap-3 rounded-xl border border-nc-alert/40 bg-nc-alert/10 px-4 py-3">
         <span className="rounded bg-nc-alert/20 px-2 py-1 text-xs font-medium text-nc-alert">
           Event · {result.scenario.event_time ?? result.scenario.label}
@@ -139,6 +143,7 @@ export default function Simulate() {
         onRun={handleRun}
         onClose={() => setDialogOpen(false)}
       />
+      </div>
     </div>
   );
 }

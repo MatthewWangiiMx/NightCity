@@ -11,6 +11,7 @@ import {
   Group,
   HemisphereLight,
   InstancedMesh,
+  type Material,
   Matrix4,
   Mesh,
   MeshBasicMaterial,
@@ -18,14 +19,26 @@ import {
   PerspectiveCamera,
   PlaneGeometry,
   Quaternion,
+  Raycaster,
   Scene,
   Shape,
   SphereGeometry,
+  Sprite,
+  Vector2,
   Vector3,
   WebGLRenderer,
 } from 'three';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import {
+  estimateBuildingElectricity,
+  type BuildingElectricity,
+} from '@/components/map/buildingElectricity';
+import { createFuturisticSign } from '@/components/map/futuristicSign';
+import {
+  matchLandmarksToBuildings,
+  type MatchedLandmark,
+} from '@/components/map/torontoLandmarks';
 
 const MASSING_URL = '/data/toronto-massing.json';
 
@@ -38,6 +51,7 @@ const WIN_H = 1.85;
 const WIN_D = 0.22;
 const WIN_GAP_X = 1.1;
 const WIN_LIT_CHANCE = 0.5;
+const SIGN_VISIBLE_M = 1100;
 
 const MOVE = {
   forward: false,
@@ -57,10 +71,9 @@ const KEY_MAP: Record<string, KeyAction> = {
   KeyA: 'left',
   KeyD: 'right',
   Space: 'up',
-  ShiftLeft: 'down',
-  ShiftRight: 'down',
-  ControlLeft: 'sprint',
-  ControlRight: 'sprint',
+  KeyC: 'down',
+  ShiftLeft: 'sprint',
+  ShiftRight: 'sprint',
 };
 
 type MassingBuilding = {
@@ -91,9 +104,10 @@ function ringArea(ring: [number, number][]) {
 }
 
 function ringCentroid(ring: [number, number][]) {
-  const body = ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
-    ? ring.slice(0, -1)
-    : ring;
+  const body =
+    ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
+      ? ring.slice(0, -1)
+      : ring;
   let x = 0;
   let z = 0;
   for (const p of body) {
@@ -111,22 +125,50 @@ function isElectrifiedBuilding(b: MassingBuilding) {
   return true;
 }
 
-function makeShape(outer: [number, number][], holes: [number, number][][]) {
-  // Shape XY → after rotateX(-90): world (x, h, z) with local +Z south.
+function makeShape(outer: [number, number][], holes: [number, number][][], inset = 0) {
   const shape = new Shape();
-  shape.moveTo(outer[0][0], -outer[0][1]);
-  for (let i = 1; i < outer.length; i++) shape.lineTo(outer[i][0], -outer[i][1]);
+  const { x: cx, z: cz } = ringCentroid(outer);
+  const pt = (x: number, z: number): [number, number] => {
+    if (inset <= 0) return [x, -z];
+    const dx = x - cx;
+    const dz = z - cz;
+    const d = Math.hypot(dx, dz) || 1;
+    const s = Math.max(0.2, (d - inset) / d);
+    return [cx + dx * s, -(cz + dz * s)];
+  };
+
+  const p0 = pt(outer[0][0], outer[0][1]);
+  shape.moveTo(p0[0], p0[1]);
+  for (let i = 1; i < outer.length; i++) {
+    const p = pt(outer[i][0], outer[i][1]);
+    shape.lineTo(p[0], p[1]);
+  }
   shape.closePath();
 
   for (const holePts of holes) {
     if (holePts.length < 4) continue;
     const hole = new Shape();
-    hole.moveTo(holePts[0][0], -holePts[0][1]);
-    for (let i = 1; i < holePts.length; i++) hole.lineTo(holePts[i][0], -holePts[i][1]);
+    const h0 = pt(holePts[0][0], holePts[0][1]);
+    hole.moveTo(h0[0], h0[1]);
+    for (let i = 1; i < holePts.length; i++) {
+      const p = pt(holePts[i][0], holePts[i][1]);
+      hole.lineTo(p[0], p[1]);
+    }
     hole.closePath();
     shape.holes.push(hole);
   }
   return shape;
+}
+
+function extrudeUp(shape: Shape, height: number, y0 = 0.02) {
+  const geo = new ExtrudeGeometry(shape, {
+    depth: height,
+    bevelEnabled: false,
+    curveSegments: 1,
+  });
+  geo.rotateX(-Math.PI / 2);
+  geo.translate(0, y0, 0);
+  return geo;
 }
 
 function forEachWindow(
@@ -195,9 +237,102 @@ function forEachWindow(
   }
 }
 
-/** Dark charcoal shells + separate cool-blue window box components (no facade textures). */
-function buildCityMesh(buildings: MassingBuilding[]): Group {
+function mergeChunks(geos: ExtrudeGeometry[], material: Material, group: Group) {
+  const chunk = 700;
+  for (let i = 0; i < geos.length; i += chunk) {
+    const slice = geos.slice(i, i + chunk);
+    const merged = mergeGeometries(slice, false);
+    slice.forEach((g) => g.dispose());
+    if (!merged) continue;
+    merged.computeVertexNormals();
+    group.add(new Mesh(merged, material));
+  }
+}
+
+function addLandmarkExtras(match: MatchedLandmark, group: Group) {
+  const accent = new MeshBasicMaterial({ color: '#67e8f9' });
+  const shell = new MeshStandardMaterial({
+    color: '#0c1520',
+    roughness: 0.85,
+    metalness: 0.18,
+  });
+
+  // Rooftop HUD ring
+  const ring = new Mesh(new CylinderGeometry(8, 8, 0.6, 24, 1, true), accent);
+  ring.position.set(match.x, match.h + 2.5, match.z);
+  group.add(ring);
+
+  // Corner beacons
+  for (const [dx, dz] of [
+    [6, 6],
+    [-6, 6],
+    [6, -6],
+    [-6, -6],
+  ] as const) {
+    const beacon = new Mesh(new BoxGeometry(1.2, 2.4, 1.2), accent);
+    beacon.position.set(match.x + dx, match.h + 1.2, match.z + dz);
+    group.add(beacon);
+  }
+
+  // Kind-specific silhouette cues
+  if (match.landmark.kind === 'stadium' || match.landmark.kind === 'arena') {
+    const bowl = new Mesh(new CylinderGeometry(28, 34, 6, 28, 1, true), shell);
+    bowl.position.set(match.x, Math.min(18, match.h * 0.35), match.z);
+    group.add(bowl);
+    const lip = new Mesh(new CylinderGeometry(30, 30, 1.2, 28, 1, true), accent);
+    lip.position.set(match.x, Math.min(22, match.h * 0.4), match.z);
+    group.add(lip);
+  }
+
+  if (match.landmark.kind === 'hotel' || match.landmark.kind === 'tower') {
+    const spire = new Mesh(new CylinderGeometry(0.5, 1.4, 16, 8), accent);
+    spire.position.set(match.x, match.h + 10, match.z);
+    group.add(spire);
+  }
+}
+
+export type BuildingPick = {
+  buildingIndex: number;
+  name: string;
+  kind: string;
+  h: number;
+  footprint_m2: number;
+  x: number;
+  z: number;
+};
+
+function ringBBox(ring: [number, number][]) {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  for (const [x, z] of ring) {
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x);
+    minZ = Math.min(minZ, z);
+    maxZ = Math.max(maxZ, z);
+  }
+  return {
+    cx: (minX + maxX) / 2,
+    cz: (minZ + maxZ) / 2,
+    w: Math.max(4, maxX - minX),
+    d: Math.max(4, maxZ - minZ),
+  };
+}
+
+function buildCityMesh(
+  buildings: MassingBuilding[],
+  matches: MatchedLandmark[],
+): { group: Group; signs: Sprite[]; hitTargets: Group } {
   const group = new Group();
+  const signs: Sprite[] = [];
+  const hitTargets = new Group();
+  hitTargets.name = 'hitTargets';
+
+  const landmarkByIndex = new Map(
+    matches.filter((m) => m.buildingIndex >= 0).map((m) => [m.buildingIndex, m]),
+  );
+  const landmarkIndex = new Set(landmarkByIndex.keys());
 
   const shellMat = new MeshStandardMaterial({
     color: '#0a0e14',
@@ -207,32 +342,86 @@ function buildCityMesh(buildings: MassingBuilding[]): Group {
     polygonOffsetFactor: 1,
     polygonOffsetUnits: 1,
   });
+  const landmarkShellMat = new MeshStandardMaterial({
+    color: '#0d1824',
+    roughness: 0.82,
+    metalness: 0.16,
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
+  });
+  const crownMat = new MeshStandardMaterial({
+    color: '#101c28',
+    roughness: 0.8,
+    metalness: 0.22,
+  });
+  const accentMat = new MeshBasicMaterial({ color: '#5eead4' });
 
   const shellGeos: ExtrudeGeometry[] = [];
-  for (const building of buildings) {
-    if (!isElectrifiedBuilding(building)) continue;
-    const shape = makeShape(building.rings[0], building.rings.slice(1));
-    const shell = new ExtrudeGeometry(shape, {
-      depth: building.h,
-      bevelEnabled: false,
-      curveSegments: 1,
-    });
-    shell.rotateX(-Math.PI / 2);
-    shell.translate(0, 0.02, 0);
-    shellGeos.push(shell);
-  }
+  const landmarkGeos: ExtrudeGeometry[] = [];
+  const crownGeos: ExtrudeGeometry[] = [];
+  const accentGeos: ExtrudeGeometry[] = [];
 
-  const chunk = 900;
-  for (let i = 0; i < shellGeos.length; i += chunk) {
-    const slice = shellGeos.slice(i, i + chunk);
-    const merged = mergeGeometries(slice, false);
-    slice.forEach((g) => g.dispose());
-    if (!merged) continue;
-    merged.computeVertexNormals();
-    group.add(new Mesh(merged, shellMat));
-  }
+  const hitMat = new MeshBasicMaterial({
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+  });
 
-  // Count, then instance — windows are real box components, not emissive textures.
+  buildings.forEach((building, index) => {
+    if (!isElectrifiedBuilding(building)) return;
+    const outer = building.rings[0];
+    const holes = building.rings.slice(1);
+    const h = building.h;
+    const isLandmark = landmarkIndex.has(index);
+    const match = landmarkByIndex.get(index);
+    const bbox = ringBBox(outer);
+
+    // Main shaft — leave headroom for setback crown on tall towers.
+    const crownH = h >= 90 ? Math.min(28, h * 0.14) : 0;
+    const shaftH = h - crownH;
+    const shape = makeShape(outer, holes);
+    const shaft = extrudeUp(shape, shaftH);
+    (isLandmark ? landmarkGeos : shellGeos).push(shaft);
+
+    if (crownH > 0) {
+      const crownShape = makeShape(outer, holes, 3.2);
+      crownGeos.push(extrudeUp(crownShape, crownH, shaftH + 0.05));
+
+      // Thin neon crown band
+      const bandShape = makeShape(outer, holes, 1.2);
+      const band = extrudeUp(bandShape, 1.1, shaftH - 0.2);
+      accentGeos.push(band);
+    }
+
+    // Mid-tower mechanical belt on very tall buildings
+    if (h >= 160) {
+      const beltY = h * 0.55;
+      const belt = extrudeUp(makeShape(outer, holes, 0.8), 2.2, beltY);
+      accentGeos.push(belt);
+    }
+
+    // Invisible click proxy (raycastable)
+    const hit = new Mesh(new BoxGeometry(bbox.w, h, bbox.d), hitMat);
+    hit.position.set(bbox.cx, h / 2, bbox.cz);
+    hit.userData.pick = {
+      buildingIndex: index,
+      name: match?.landmark.short ?? match?.landmark.name ?? `Building · ${Math.round(h)}m`,
+      kind: match?.landmark.kind ?? (h >= 80 ? 'office' : 'structure'),
+      h,
+      footprint_m2: match?.footprint_m2 ?? ringArea(outer),
+      x: bbox.cx,
+      z: bbox.cz,
+    } satisfies BuildingPick;
+    hitTargets.add(hit);
+  });
+
+  mergeChunks(shellGeos, shellMat, group);
+  mergeChunks(landmarkGeos, landmarkShellMat, group);
+  mergeChunks(crownGeos, crownMat, group);
+  mergeChunks(accentGeos, accentMat, group);
+
+  // Windows
   let litTotal = 0;
   let dimTotal = 0;
   forEachWindow(buildings, (lit) => {
@@ -256,7 +445,6 @@ function buildCityMesh(buildings: MassingBuilding[]): Group {
     if (lit) litMesh?.setMatrixAt(litI++, mat);
     else dimMesh?.setMatrixAt(dimI++, mat);
   });
-
   if (litMesh) {
     litMesh.instanceMatrix.needsUpdate = true;
     group.add(litMesh);
@@ -266,7 +454,36 @@ function buildCityMesh(buildings: MassingBuilding[]): Group {
     group.add(dimMesh);
   }
 
-  // Bare dark ground — no roads / grids / infrastructure.
+  // Landmark extras + futuristic name signs
+  for (const match of matches) {
+    if (match.landmark.id !== 'cn-tower') addLandmarkExtras(match, group);
+    else {
+      const cnHit = new Mesh(new CylinderGeometry(18, 22, 553, 12), hitMat);
+      cnHit.position.set(match.x, 276, match.z);
+      cnHit.userData.pick = {
+        buildingIndex: -1,
+        name: 'CN Tower',
+        kind: 'landmark',
+        h: 553,
+        footprint_m2: match.footprint_m2,
+        x: match.x,
+        z: match.z,
+      } satisfies BuildingPick;
+      hitTargets.add(cnHit);
+    }
+
+    const label = match.landmark.short ?? match.landmark.name;
+    const kind = (match.landmark.kind ?? 'structure').toUpperCase();
+    const sign = createFuturisticSign(label, kind);
+    const lift = match.landmark.id === 'cn-tower' ? 570 : match.h + 22;
+    sign.position.set(match.x, lift, match.z);
+    sign.userData.anchor = { x: match.x, y: lift, z: match.z };
+    group.add(sign);
+    signs.push(sign);
+  }
+
+  group.add(hitTargets);
+
   const ground = new Mesh(
     new PlaneGeometry(8000, 8000),
     new MeshStandardMaterial({ color: '#05070c', roughness: 1, metalness: 0 }),
@@ -275,10 +492,9 @@ function buildCityMesh(buildings: MassingBuilding[]): Group {
   ground.position.y = -0.05;
   group.add(ground);
 
-  return group;
+  return { group, signs, hitTargets };
 }
 
-/** CN Tower restyled to the same dark shell + cool accent language. */
 function buildCnTower(x = 0, z = 0): Group {
   const g = new Group();
   g.position.set(x, 0, z);
@@ -302,7 +518,6 @@ function buildCnTower(x = 0, z = 0): Group {
   shaft.position.y = 206;
   g.add(shaft);
 
-  // Cool accent bands (not warm bloom pods).
   for (const [y, r, h] of [
     [350, 20, 10],
     [385, 11, 7],
@@ -327,15 +542,126 @@ function buildCnTower(x = 0, z = 0): Group {
 }
 
 /**
- * Downtown Toronto from official 3D Massing — dark shells, discrete window components,
- * electrified buildings only (no street / grid infrastructure).
+ * Downtown Toronto from official 3D Massing — dark shells, discrete windows,
+ * named landmarks with futuristic signs.
  */
+function ElectricityPanel({
+  data,
+  onClose,
+}: {
+  data: BuildingElectricity;
+  onClose: () => void;
+}) {
+  const statusColor =
+    data.status === 'elevated' ? 'text-nc-alert' : data.status === 'flexible' ? 'text-nc-flex' : 'text-nc-renew';
+
+  return (
+    <div className="pointer-events-auto absolute right-4 top-20 z-20 w-[min(22rem,calc(100vw-2rem))] rounded-2xl border border-cyan-400/40 bg-[#061018]/92 p-4 shadow-2xl shadow-cyan-500/10 backdrop-blur-md">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-[10px] uppercase tracking-[0.2em] text-cyan-300/80">Grid node</div>
+          <h2 className="mt-1 text-lg font-semibold leading-tight text-nc-text">{data.name}</h2>
+          <div className="mt-1 text-xs capitalize text-nc-muted">
+            {data.kind} · {data.floors} floors · {data.height_m} m
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded-md border border-nc-border px-2 py-1 text-[11px] text-nc-muted hover:border-nc-renew hover:text-nc-text"
+        >
+          Close
+        </button>
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-2 text-sm">
+        <Metric label="Demand now" value={`${data.demand_kw.toLocaleString()} kW`} accent />
+        <Metric label="Peak load" value={`${data.peak_kw.toLocaleString()} kW`} />
+        <Metric label="Daily energy" value={`${data.daily_kwh.toLocaleString()} kWh`} />
+        <Metric label="Annual" value={`${data.annual_mwh.toLocaleString()} MWh`} />
+        <Metric label="Grid import" value={`${data.grid_import_kw.toLocaleString()} kW`} />
+        <Metric label="Load factor" value={`${data.load_factor_pct}%`} />
+      </div>
+
+      <div className="mt-4">
+        <div className="mb-1 flex justify-between text-[11px] text-nc-muted">
+          <span>Load mix</span>
+          <span className={statusColor}>{data.status}</span>
+        </div>
+        <div className="flex h-2 overflow-hidden rounded-full bg-nc-panel-2">
+          <div className="bg-sky-400" style={{ width: `${data.hvac_share_pct}%` }} title="HVAC" />
+          <div className="bg-cyan-200" style={{ width: `${data.lighting_share_pct}%` }} title="Lighting" />
+          <div className="bg-teal-500/80" style={{ width: `${data.plug_share_pct}%` }} title="Plug loads" />
+        </div>
+        <div className="mt-1 flex justify-between text-[10px] text-nc-muted">
+          <span>HVAC {data.hvac_share_pct}%</span>
+          <span>Lights {data.lighting_share_pct}%</span>
+          <span>Plugs {data.plug_share_pct}%</span>
+        </div>
+      </div>
+
+      <div className="mt-4 flex items-center justify-between rounded-lg border border-nc-border/80 bg-nc-panel/50 px-3 py-2 text-xs">
+        <span className="text-nc-muted">Renewable offset</span>
+        <span className="font-semibold text-nc-renew">{data.renewable_offset_pct}%</span>
+      </div>
+      <div className="mt-2 flex items-center justify-between rounded-lg border border-nc-border/80 bg-nc-panel/50 px-3 py-2 text-xs">
+        <span className="text-nc-muted">EV chargers on site</span>
+        <span className="font-semibold text-nc-grid">{data.ev_chargers}</span>
+      </div>
+
+      <p className="mt-3 text-[10px] leading-snug text-nc-muted/80">
+        Simulated from massing height × footprint (illustrative digital twin — not metered utility
+        data).
+      </p>
+    </div>
+  );
+}
+
+function Metric({
+  label,
+  value,
+  accent,
+}: {
+  label: string;
+  value: string;
+  accent?: boolean;
+}) {
+  return (
+    <div className="rounded-lg border border-nc-border/70 bg-nc-panel/40 px-2.5 py-2">
+      <div className="text-[10px] uppercase tracking-wide text-nc-muted">{label}</div>
+      <div className={`mt-0.5 tabular-nums ${accent ? 'text-cyan-300' : 'text-nc-text'}`}>{value}</div>
+    </div>
+  );
+}
+
 export default function TorontoCityViewer() {
   const mountRef = useRef<HTMLDivElement>(null);
   const [locked, setLocked] = useState(false);
   const [status, setStatus] = useState('Loading Toronto 3D Massing…');
   const [error, setError] = useState<string | null>(null);
   const [credit, setCredit] = useState('City of Toronto Open Data · 3D Massing');
+  const [labeled, setLabeled] = useState(0);
+  const [electricity, setElectricity] = useState<BuildingElectricity | null>(null);
+  const selectRef = useRef<(pick: BuildingPick | null) => void>(() => {});
+
+  useEffect(() => {
+    selectRef.current = (pick) => {
+      if (!pick) {
+        setElectricity(null);
+        return;
+      }
+      setElectricity(
+        estimateBuildingElectricity({
+          id: `b-${pick.buildingIndex}`,
+          name: pick.name,
+          kind: pick.kind,
+          height_m: pick.h,
+          footprint_m2: pick.footprint_m2,
+          seed: pick.buildingIndex * 17 + Math.round(pick.h),
+        }),
+      );
+    };
+  }, []);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -346,6 +672,9 @@ export default function TorontoCityViewer() {
     let controls: PointerLockControls | null = null;
     let renderer: WebGLRenderer | null = null;
     let city: Group | null = null;
+    let hitTargets: Group | null = null;
+    let signs: Sprite[] = [];
+    let highlight: Mesh | null = null;
 
     const scene = new Scene();
     scene.background = new Color('#02060d');
@@ -364,7 +693,6 @@ export default function TorontoCityViewer() {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
     mount.appendChild(renderer.domElement);
 
-    // Flat, dim lighting — windows carry the scene, not bloom wash.
     scene.add(new AmbientLight(0x6b7c8f, 0.22));
     scene.add(new HemisphereLight(0x1e293b, 0x020617, 0.4));
     const key = new DirectionalLight(0x94a3b8, 0.28);
@@ -379,6 +707,8 @@ export default function TorontoCityViewer() {
 
     const velocity = new Vector3();
     const direction = new Vector3();
+    const raycaster = new Raycaster();
+    const pointer = new Vector2(0, 0); // center reticle while locked
     let prevTime = performance.now();
     let ready = false;
 
@@ -388,11 +718,64 @@ export default function TorontoCityViewer() {
     };
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.code === 'Escape') return;
+      if (e.code === 'KeyF' && controls?.isLocked) {
+        // Inspect whatever is under the reticle
+        pickAtCenter();
+        return;
+      }
       setKey(e.code, true);
     };
     const onKeyUp = (e: KeyboardEvent) => setKey(e.code, false);
+
+    const showHighlight = (pick: BuildingPick) => {
+      if (highlight) {
+        scene.remove(highlight);
+        highlight.geometry.dispose();
+        (highlight.material as MeshBasicMaterial).dispose();
+        highlight = null;
+      }
+      const box = new Mesh(
+        new BoxGeometry(Math.max(12, Math.sqrt(pick.footprint_m2) * 0.9), pick.h + 4, Math.max(12, Math.sqrt(pick.footprint_m2) * 0.9)),
+        new MeshBasicMaterial({
+          color: '#22d3ee',
+          transparent: true,
+          opacity: 0.12,
+          depthWrite: false,
+        }),
+      );
+      box.position.set(pick.x, pick.h / 2, pick.z);
+      highlight = box;
+      scene.add(box);
+    };
+
+    const pickAtCenter = () => {
+      if (!hitTargets || !ready) return;
+      raycaster.setFromCamera(pointer, camera);
+      const hits = raycaster.intersectObjects(hitTargets.children, false);
+      if (!hits.length) {
+        selectRef.current(null);
+        if (highlight) {
+          scene.remove(highlight);
+          highlight.geometry.dispose();
+          (highlight.material as MeshBasicMaterial).dispose();
+          highlight = null;
+        }
+        return;
+      }
+      const pick = hits[0].object.userData.pick as BuildingPick | undefined;
+      if (!pick) return;
+      selectRef.current(pick);
+      showHighlight(pick);
+    };
+
     const onClick = () => {
-      if (ready && controls && !controls.isLocked) controls.lock();
+      if (!ready || !controls) return;
+      if (!controls.isLocked) {
+        controls.lock();
+        return;
+      }
+      // While flying: click = inspect building under crosshair
+      pickAtCenter();
     };
 
     const resize = () => {
@@ -446,6 +829,20 @@ export default function TorontoCityViewer() {
         }
       }
 
+      // Distance-scale futuristic signs so names stay readable in flight.
+      for (const sign of signs) {
+        const anchor = sign.userData.anchor as { x: number; y: number; z: number };
+        const dist = camera.position.distanceTo(sign.position);
+        const visible = dist < SIGN_VISIBLE_M;
+        sign.visible = visible;
+        if (!visible) continue;
+        const base = sign.userData.baseScale as { x: number; y: number };
+        const s = Math.min(2.8, Math.max(0.85, dist / 280));
+        sign.scale.set(base.x * s, base.y * s, 1);
+        // Gentle bob
+        sign.position.y = anchor.y + Math.sin(now * 0.0015 + anchor.x * 0.01) * 1.2;
+      }
+
       renderer.render(scene, camera);
     };
 
@@ -459,16 +856,22 @@ export default function TorontoCityViewer() {
         if (disposed) return;
 
         const electric = data.buildings.filter(isElectrifiedBuilding);
-        setStatus(`Building ${electric.length.toLocaleString()} electrified structures…`);
+        setStatus(`Labeling Toronto landmarks across ${electric.length.toLocaleString()} buildings…`);
         setCredit(`${data.source} · ${data.license}`);
 
         await new Promise((r) => setTimeout(r, 30));
         if (disposed) return;
 
-        city = buildCityMesh(electric);
+        const matches = matchLandmarksToBuildings(electric);
+        const built = buildCityMesh(electric, matches);
+        city = built.group;
+        signs = built.signs;
+        hitTargets = built.hitTargets;
+
         const cn = data.landmarks?.cnTower;
         city.add(buildCnTower(cn?.x ?? 0, cn?.z ?? 0));
         scene.add(city);
+        setLabeled(matches.length);
         ready = true;
         setStatus('');
       } catch (err) {
@@ -489,12 +892,24 @@ export default function TorontoCityViewer() {
       controls?.removeEventListener('lock', onLock);
       controls?.removeEventListener('unlock', onUnlock);
       controls?.dispose();
+      if (highlight) {
+        scene.remove(highlight);
+        highlight.geometry.dispose();
+        (highlight.material as MeshBasicMaterial).dispose();
+      }
       if (city) {
         city.traverse((obj) => {
-          if (obj instanceof Mesh) {
+          if (obj instanceof Mesh || obj instanceof InstancedMesh) {
             obj.geometry.dispose();
             const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-            mats.forEach((m) => m.dispose());
+            mats.forEach((m) => {
+              if ('map' in m && m.map) m.map.dispose();
+              m.dispose();
+            });
+          }
+          if (obj instanceof Sprite) {
+            obj.material.map?.dispose();
+            obj.material.dispose();
           }
         });
         scene.remove(city);
@@ -525,10 +940,25 @@ export default function TorontoCityViewer() {
         <div className="rounded-md border border-nc-border/60 bg-nc-panel/70 px-3 py-2 text-right backdrop-blur-md">
           <div className="text-sm font-semibold tracking-wide">Toronto</div>
           <div className="text-[11px] uppercase tracking-[0.16em] text-nc-muted">
-            Electrified massing
+            {labeled > 0 ? `${labeled} nameplates · click to inspect` : 'Electrified massing'}
           </div>
         </div>
       </div>
+
+      {locked && (
+        <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2">
+          <div className="h-5 w-5 -translate-y-px">
+            <div className="absolute left-1/2 top-0 h-2 w-px -translate-x-1/2 bg-cyan-300/90" />
+            <div className="absolute bottom-0 left-1/2 h-2 w-px -translate-x-1/2 bg-cyan-300/90" />
+            <div className="absolute left-0 top-1/2 h-px w-2 -translate-y-1/2 bg-cyan-300/90" />
+            <div className="absolute right-0 top-1/2 h-px w-2 -translate-y-1/2 bg-cyan-300/90" />
+          </div>
+        </div>
+      )}
+
+      {electricity && (
+        <ElectricityPanel data={electricity} onClose={() => setElectricity(null)} />
+      )}
 
       {status && !error && (
         <div className="absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-nc-border/80 bg-nc-panel/85 px-8 py-5 text-sm text-nc-muted backdrop-blur-md">
@@ -547,7 +977,10 @@ export default function TorontoCityViewer() {
         >
           <div className="text-2xl font-semibold">Click to fly</div>
           <div className="mt-2 text-xs text-nc-muted">
-            WASD move · Space / Shift up-down · Ctrl sprint · Esc release
+            WASD move · Space up · C down · Shift sprint · Esc release
+          </div>
+          <div className="mt-3 text-[11px] text-nc-renew/90">
+            Aim at a building and click (or press F) for electricity data
           </div>
         </button>
       )}

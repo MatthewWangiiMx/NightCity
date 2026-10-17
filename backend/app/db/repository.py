@@ -17,6 +17,7 @@ from app.schemas.models import (
     RunResult,
     ScenarioKind,
     TimeStep,
+    WeatherObservation,
 )
 from app.sim.district import get_district
 from app.sim.scenarios import SCENARIOS
@@ -222,3 +223,27 @@ def recent_telemetry(district_id: str, limit: int = 500) -> list[TimeStep]:
             {"district_id": district_id, "limit": limit},
         ).mappings().all()
         return [TimeStep(**row) for row in reversed(rows)]
+
+
+def save_weather_observations(observations: list[WeatherObservation]) -> int:
+    """Upsert provider observations and return the number of rows received."""
+    if not observations:
+        return 0
+    with get_session() as s:
+        if s is None:
+            raise RuntimeError("Database is disabled; set USE_DATABASE=true to ingest weather data")
+        s.execute(
+            text(
+                "INSERT INTO weather_observations (observation_time, latitude, longitude, "
+                "temperature_2m_c, precipitation_mm, wind_speed_10m_kmh, weather_code) "
+                "VALUES (:observation_time, :latitude, :longitude, :temperature_2m_c, "
+                ":precipitation_mm, :wind_speed_10m_kmh, :weather_code) "
+                "ON CONFLICT (observation_time, latitude, longitude) DO UPDATE SET "
+                "temperature_2m_c = EXCLUDED.temperature_2m_c, "
+                "precipitation_mm = EXCLUDED.precipitation_mm, "
+                "wind_speed_10m_kmh = EXCLUDED.wind_speed_10m_kmh, "
+                "weather_code = EXCLUDED.weather_code"
+            ),
+            [observation.model_dump() for observation in observations],
+        )
+    return len(observations)

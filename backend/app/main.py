@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import buildings, dispatch, district, health, scenarios, simulation
+from app.api.routes import buildings, dispatch, district, health, scenarios, simulation, weather
 from app.config import get_settings
 
 settings = get_settings()
@@ -28,5 +28,6 @@ for router in (
     simulation.router,
     dispatch.router,
     buildings.router,
+    weather.router,
 ):
     app.include_router(router, prefix="/api")

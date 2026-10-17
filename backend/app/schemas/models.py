@@ -131,3 +131,27 @@ class RunResult(BaseModel):
     actions: list[DispatchAction]
     explanation: str | None = None     # LLM text, optional and non-authoritative
     is_simulated: bool = True          # always true: this is a digital twin
+
+
+class WeatherRequest(BaseModel):
+    latitude: float = Field(43.6532, ge=-90, le=90)
+    longitude: float = Field(-79.3832, ge=-180, le=180)
+    forecast_days: int = Field(3, ge=1, le=16)
+    past_days: int = Field(0, ge=0, le=92)
+
+
+class WeatherObservation(BaseModel):
+    observation_time: datetime
+    latitude: float
+    longitude: float
+    temperature_2m_c: float | None = None
+    precipitation_mm: float | None = None
+    wind_speed_10m_kmh: float | None = None
+    weather_code: int | None = None
+
+
+class WeatherIngestResponse(BaseModel):
+    source: str = "open-meteo"
+    observations_saved: int
+    latitude: float
+    longitude: float

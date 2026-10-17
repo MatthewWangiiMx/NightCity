@@ -26,6 +26,30 @@ Tables: `districts`, `assets`, `runs`, `dispatch_actions`, and `telemetry` — a
 `t`, which is the reason for using Timescale at all: one row per asset per 15-minute step per
 variant (`baseline` / `optimized`) adds up quickly across reruns.
 
+Weather ingestion uses the separate migration `app/db/migrations/002_weather.sql`, which creates
+the `weather_observations` hypertable. Apply it after the initial migration:
+
+```powershell
+psql "$env:TIGERDATA_URL" -f backend/app/db/migrations/002_weather.sql
+```
+
+With `USE_DATABASE=true`, fetch and store three days of hourly weather for the default Toronto
+coordinates:
+
+```powershell
+Invoke-RestMethod -Method Post http://localhost:8000/api/weather/ingest `
+  -ContentType "application/json" -Body '{}'
+```
+
+You can provide any Open-Meteo-supported coordinate, plus up to 16 forecast days and 92 past
+days:
+
+```powershell
+Invoke-RestMethod -Method Post http://localhost:8000/api/weather/ingest `
+  -ContentType "application/json" `
+  -Body '{"latitude":43.6532,"longitude":-79.3832,"forecast_days":7,"past_days":1}'
+```
+
 ## 3. Code
 
 `app/db/repository.py` holds the read/write functions (`save_run`, `load_run`,

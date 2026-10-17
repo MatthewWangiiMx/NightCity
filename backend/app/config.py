@@ -19,6 +19,7 @@ class Settings(BaseSettings):
 
     # Server
     cors_origins: str = "http://localhost:5173"
+    open_meteo_forecast_url: str = "https://api.open-meteo.com/v1/forecast"
 
     @property
     def cors_origin_list(self) -> list[str]:

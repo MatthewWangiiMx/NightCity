@@ -109,7 +109,7 @@ export function PlanWeatherDayPicker({
   }, [days]);
 
   return (
-    <div className="flex min-h-[60vh] flex-col items-center justify-center px-4 py-10">
+    <div className="flex min-h-[calc(100vh-4.5rem)] flex-col items-center justify-center px-4 py-10">
       <div className="w-full max-w-md">
         <div className="mb-6 text-center">
           <h1 className="text-lg font-semibold tracking-tight text-nc-text">Choose a plan day</h1>

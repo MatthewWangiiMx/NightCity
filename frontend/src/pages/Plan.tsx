@@ -3,6 +3,7 @@ import Panel from '@/components/Panel';
 import GridLoadProfile from '@/components/charts/GridLoadProfile';
 import EnergyMixDonut from '@/components/charts/EnergyMixDonut';
 import CityPageBackdrop from '@/components/map/CityPageBackdrop';
+import EfficiencyHeadroomPanel from '@/components/panels/EfficiencyHeadroomPanel';
 import {
   PlanWeatherDayPicker,
   WeatherDayBar,
@@ -262,6 +263,9 @@ export default function Plan() {
             {applied ? 'Plan applied ✓' : 'Apply plan'}
           </button>
         </Panel>
+
+        {/* Unlike the sliders above, this target comes from reported practice. */}
+        <EfficiencyHeadroomPanel className="xl:col-span-2" />
             </div>
           </div>
         )}

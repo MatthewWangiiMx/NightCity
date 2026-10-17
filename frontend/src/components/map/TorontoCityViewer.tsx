@@ -41,9 +41,12 @@ import {
 } from '@/components/map/buildingElectricity';
 import { createFuturisticSign } from '@/components/map/futuristicSign';
 import {
+  localToLonLat,
   matchLandmarksToBuildings,
   type MatchedLandmark,
 } from '@/components/map/torontoLandmarks';
+import BuildingEnergyPanel from '@/components/panels/BuildingEnergyPanel';
+import { useEwrbProfile } from '@/hooks/useEwrb';
 
 const MASSING_CACHE_URL = '/data/toronto-massing.json';
 const MASSING_API_URL = '/api/buildings/massing';
@@ -844,122 +847,6 @@ function buildCnTower(x = 0, z = 0): Group {
   return g;
 }
 
-/**
- * Downtown Toronto from official 3D Massing — dark shells, discrete windows,
- * named landmarks with futuristic signs.
- */
-function ElectricityPanel({
-  data,
-  onClose,
-}: {
-  data: BuildingElectricity;
-  onClose: () => void;
-}) {
-  const statusColor =
-    data.status === 'elevated' ? 'text-nc-alert' : data.status === 'flexible' ? 'text-nc-flex' : 'text-nc-renew';
-
-  return (
-    <div className="pointer-events-auto absolute right-4 top-20 z-20 w-[min(22rem,calc(100vw-2rem))] rounded-2xl border border-cyan-400/40 bg-[#061018]/92 p-4 shadow-2xl shadow-cyan-500/10 backdrop-blur-md">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="text-[10px] uppercase tracking-[0.2em] text-cyan-300/80">Grid node</div>
-          <h2 className="mt-1 text-lg font-semibold leading-tight text-nc-text">{data.name}</h2>
-              <div className="mt-1 text-xs capitalize text-nc-muted">
-            {data.kind} · {data.floors} floors
-            {data.construction.floors_estimated ? ' (est.)' : ''} · {data.height_m} m
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded-md border border-nc-border px-2 py-1 text-[11px] text-nc-muted hover:border-nc-renew hover:text-nc-text"
-        >
-          Close
-        </button>
-      </div>
-
-      <div className="mt-4 grid grid-cols-2 gap-2 text-sm">
-        <Metric label="Height" value={`${(data.construction.avg_h ?? data.height_m).toLocaleString()} m`} accent />
-        <Metric label="Footprint" value={`${data.footprint_m2.toLocaleString()} m²`} />
-        <Metric
-          label="Levels"
-          value={`${data.floors}${data.construction.floors_estimated ? ' est.' : ''}`}
-        />
-        <Metric label="Demand now" value={`${data.demand_kw.toLocaleString()} kW`} />
-        <Metric label="Peak load" value={`${data.peak_kw.toLocaleString()} kW`} />
-        <Metric label="Daily energy" value={`${data.daily_kwh.toLocaleString()} kWh`} />
-        <Metric label="Annual" value={`${data.annual_mwh.toLocaleString()} MWh`} />
-      </div>
-
-      <div className="mt-3 space-y-1.5 rounded-lg border border-nc-border/80 bg-nc-panel/50 px-3 py-2 text-[11px]">
-        <div className="flex justify-between gap-3">
-          <span className="text-nc-muted">Height source</span>
-          <span className="text-right text-nc-text">{data.construction.height_src ?? '—'}</span>
-        </div>
-        <div className="flex justify-between gap-3">
-          <span className="text-nc-muted">Building source</span>
-          <span className="text-right text-nc-text">{data.construction.bldg_src ?? '—'}</span>
-        </div>
-        <div className="flex justify-between gap-3">
-          <span className="text-nc-muted">Data</span>
-          <span className="text-right text-cyan-200/90">
-            {data.construction.data_source === 'tigerdata' ? 'TigerData' : 'Massing cache'}
-          </span>
-        </div>
-      </div>
-
-      <div className="mt-4">
-        <div className="mb-1 flex justify-between text-[11px] text-nc-muted">
-          <span>Load mix</span>
-          <span className={statusColor}>{data.status}</span>
-        </div>
-        <div className="flex h-2 overflow-hidden rounded-full bg-nc-panel-2">
-          <div className="bg-sky-400" style={{ width: `${data.hvac_share_pct}%` }} title="HVAC" />
-          <div className="bg-cyan-200" style={{ width: `${data.lighting_share_pct}%` }} title="Lighting" />
-          <div className="bg-teal-500/80" style={{ width: `${data.plug_share_pct}%` }} title="Plug loads" />
-        </div>
-        <div className="mt-1 flex justify-between text-[10px] text-nc-muted">
-          <span>HVAC {data.hvac_share_pct}%</span>
-          <span>Lights {data.lighting_share_pct}%</span>
-          <span>Plugs {data.plug_share_pct}%</span>
-        </div>
-      </div>
-
-      <div className="mt-4 flex items-center justify-between rounded-lg border border-nc-border/80 bg-nc-panel/50 px-3 py-2 text-xs">
-        <span className="text-nc-muted">Renewable offset</span>
-        <span className="font-semibold text-nc-renew">{data.renewable_offset_pct}%</span>
-      </div>
-      <div className="mt-2 flex items-center justify-between rounded-lg border border-nc-border/80 bg-nc-panel/50 px-3 py-2 text-xs">
-        <span className="text-nc-muted">EV chargers on site</span>
-        <span className="font-semibold text-nc-grid">{data.ev_chargers}</span>
-      </div>
-
-      <p className="mt-3 text-[10px] leading-snug text-nc-muted/80">
-        Heights and footprint from City of Toronto 3D Massing via{' '}
-        {data.construction.data_source === 'tigerdata' ? 'TigerData' : 'local cache'}. Electricity
-        load mix is simulated, not metered utility data.
-      </p>
-    </div>
-  );
-}
-
-function Metric({
-  label,
-  value,
-  accent,
-}: {
-  label: string;
-  value: string;
-  accent?: boolean;
-}) {
-  return (
-    <div className="rounded-lg border border-nc-border/70 bg-nc-panel/40 px-2.5 py-2">
-      <div className="text-[10px] uppercase tracking-wide text-nc-muted">{label}</div>
-      <div className={`mt-0.5 tabular-nums ${accent ? 'text-cyan-300' : 'text-nc-text'}`}>{value}</div>
-    </div>
-  );
-}
-
 function easeInOutCubic(t: number) {
   return t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
 }
@@ -1101,6 +988,9 @@ export default function TorontoCityViewer({
   const [credit, setCredit] = useState('City of Toronto Open Data · 3D Massing');
   const [labeled, setLabeled] = useState(0);
   const [electricity, setElectricity] = useState<BuildingElectricity | null>(null);
+  // Reported EWRB half of the inspector; the geometry half renders without it.
+  const { profile: ewrbProfile, status: ewrbStatus, load: loadEwrb, clear: clearEwrb } =
+    useEwrbProfile();
   const [cityReady, setCityReady] = useState(false);
   const [gridVisible, setGridVisible] = useState(true);
   const [searchTargets, setSearchTargets] = useState<SearchTarget[]>([]);
@@ -1126,11 +1016,13 @@ export default function TorontoCityViewer({
     selectRef.current = (pick) => {
       if (!pick) {
         setElectricity(null);
+        clearEwrb();
         return;
       }
+      const id = pick.buildingId != null ? `tiger-${pick.buildingId}` : `b-${pick.buildingIndex}`;
       setElectricity(
         estimateBuildingElectricity({
-          id: pick.buildingId != null ? `tiger-${pick.buildingId}` : `b-${pick.buildingIndex}`,
+          id,
           name: pick.name,
           kind: pick.kind,
           height_m: pick.h,
@@ -1146,8 +1038,23 @@ export default function TorontoCityViewer({
           data_source: pick.data_source,
         }),
       );
+
+      // Scene coords back to lon/lat so the backend can pick the postal FSA
+      // cohort rather than falling back to the city-wide one.
+      const { lat, lon } = localToLonLat(pick.x, pick.z);
+      loadEwrb({
+        id,
+        name: pick.name,
+        kind: pick.kind,
+        footprint_m2: pick.footprint_m2,
+        height_m: pick.h,
+        levels: pick.levels ?? null,
+        lat,
+        lon,
+        hour: new Date().getHours(),
+      });
     };
-  }, []);
+  }, [loadEwrb, clearEwrb]);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -1678,7 +1585,15 @@ export default function TorontoCityViewer({
       )}
 
       {exploreUi && electricity && (
-        <ElectricityPanel data={electricity} onClose={() => setElectricity(null)} />
+        <BuildingEnergyPanel
+          geometry={electricity}
+          profile={ewrbProfile}
+          status={ewrbStatus}
+          onClose={() => {
+            setElectricity(null);
+            clearEwrb();
+          }}
+        />
       )}
 
       {status && !error && mode !== 'zoom' && mode !== 'backdrop' && (

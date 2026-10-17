@@ -10,16 +10,11 @@ const NAV = [
 export function Wordmark({ size = 'md' }: { size?: 'md' | 'lg' }) {
   const big = size === 'lg';
   return (
-    <div className="leading-tight">
-      <div className={big ? 'text-5xl font-bold tracking-tight sm:text-6xl' : 'text-2xl font-bold tracking-tight'}>
-        NIGHT<span className="text-nc-renew">CITY</span>
-      </div>
-      <div
-        className={`uppercase tracking-[0.22em] text-nc-muted ${big ? 'mt-2 text-[11px]' : 'text-[9px]'}`}
-      >
-        AI-powered energy grid digital twin
-      </div>
-    </div>
+    <img
+      src="/nightcity-logo.png"
+      alt="Night City"
+      className={big ? 'h-16 w-auto sm:h-24' : 'h-8 w-auto'}
+    />
   );
 }
 

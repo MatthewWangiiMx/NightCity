@@ -1,9 +1,7 @@
-import TorontoCityViewer from '@/components/map/TorontoCityViewer';
-
 /**
- * Explore City: fly through downtown Toronto extruded from the City's
- * official 3D Massing open dataset (open.toronto.ca/dataset/3d-massing).
+ * Explore City chrome is rendered by TorontoCityViewer when mode="explore".
+ * This route keeps /explore under the shared CityExperience WebGL stage.
  */
 export default function Explore() {
-  return <TorontoCityViewer />;
+  return null;
 }

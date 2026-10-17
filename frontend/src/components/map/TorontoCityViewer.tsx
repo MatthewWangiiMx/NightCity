@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   AmbientLight,
+  BufferGeometry,
   BoxGeometry,
   Color,
   CylinderGeometry,
@@ -11,6 +12,9 @@ import {
   Group,
   HemisphereLight,
   InstancedMesh,
+  Line,
+  LineBasicMaterial,
+  LineSegments,
   type Material,
   Matrix4,
   Mesh,
@@ -43,6 +47,8 @@ import {
 
 const MASSING_CACHE_URL = '/data/toronto-massing.json';
 const MASSING_API_URL = '/api/buildings/massing';
+const GRID_URL = '/data/grid.json';
+const BUILDING_LINK_RADIUS_M = 250;
 
 /** Only keep structures tall enough to be occupied / electrified buildings. */
 const MIN_ELECTRIC_HEIGHT_M = 10;
@@ -100,7 +106,8 @@ const KEY_MAP: Record<string, KeyAction> = {
 };
 
 type MassingBuilding = {
-  id?: number;
+  id?: number | string;
+  node_id?: string;
   h: number;
   levels?: number;
   floors_estimated?: boolean;
@@ -111,6 +118,105 @@ type MassingBuilding = {
   bldg_src?: string | null;
   rings: [number, number][][];
 };
+
+type GridNode = {
+  node_id: string;
+  node_type: 'substation' | 'feeder' | 'transformer';
+  x: number;
+  z: number;
+};
+
+type GridEdge = {
+  parent_id: string;
+  child_id: string;
+  is_tie: boolean;
+  normally_open: boolean;
+};
+
+type GridData = { nodes: GridNode[]; edges: GridEdge[] };
+
+async function loadGrid(): Promise<GridData | null> {
+  try {
+    const res = await fetch(GRID_URL);
+    if (!res.ok) return null;
+    const data = (await res.json()) as GridData;
+    return data.nodes?.length && data.edges ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildGridMesh(data: GridData, buildings: MassingBuilding[]): Group {
+  const group = new Group();
+  group.name = 'distribution-grid';
+  const byId = new Map(data.nodes.map((node) => [node.node_id, node]));
+  const lineMaterial = new LineBasicMaterial({
+    color: '#22d3ee',
+    transparent: true,
+    opacity: 0.65,
+    depthTest: false,
+  });
+  const tieMaterial = new LineBasicMaterial({
+    color: '#fbbf24',
+    transparent: true,
+    opacity: 0.75,
+    depthTest: false,
+  });
+  for (const edge of data.edges) {
+    const parent = byId.get(edge.parent_id);
+    const child = byId.get(edge.child_id);
+    if (!parent || !child) continue;
+    const geometry = new BufferGeometry().setFromPoints([
+      new Vector3(parent.x, 3, parent.z),
+      new Vector3(child.x, 3, child.z),
+    ]);
+    group.add(new Line(geometry, edge.normally_open ? tieMaterial : lineMaterial));
+  }
+  for (const node of data.nodes) {
+    const color =
+      node.node_type === 'substation'
+        ? '#fbbf24'
+        : node.node_type === 'feeder'
+          ? '#a78bfa'
+          : '#22d3ee';
+    const radius = node.node_type === 'substation' ? 18 : node.node_type === 'feeder' ? 12 : 7;
+    const puck = new Mesh(
+      new SphereGeometry(radius, 16, 10),
+      new MeshBasicMaterial({ color, depthTest: false }),
+    );
+    puck.renderOrder = 20;
+    puck.position.set(node.x, 12, node.z);
+    group.add(puck);
+  }
+  const buildingLinkPoints: Vector3[] = [];
+  for (const building of buildings) {
+    if (!building.node_id || !building.rings[0]?.length) continue;
+    const transformer = byId.get(building.node_id);
+    if (!transformer || transformer.node_type !== 'transformer') continue;
+    const center = ringCentroid(building.rings[0]);
+    if (Math.hypot(center.x - transformer.x, center.z - transformer.z) > BUILDING_LINK_RADIUS_M) {
+      continue;
+    }
+    buildingLinkPoints.push(
+      new Vector3(transformer.x, 7, transformer.z),
+      new Vector3(center.x, 5, center.z),
+    );
+  }
+  if (buildingLinkPoints.length) {
+    const buildingLinks = new LineSegments(
+      new BufferGeometry().setFromPoints(buildingLinkPoints),
+      new LineBasicMaterial({
+        color: '#67e8f9',
+        transparent: true,
+        opacity: 0.18,
+        depthTest: false,
+      }),
+    );
+    buildingLinks.renderOrder = 19;
+    group.add(buildingLinks);
+  }
+  return group;
+}
 
 type MassingData = {
   source: string;
@@ -364,7 +470,7 @@ function addLandmarkExtras(match: MatchedLandmark, group: Group, roofY?: number)
 
 export type BuildingPick = {
   buildingIndex: number;
-  buildingId?: number;
+  buildingId?: number | string;
   name: string;
   kind: string;
   h: number;
@@ -1038,6 +1144,7 @@ export default function TorontoCityViewer({
     let controls: PointerLockControls | null = null;
     let renderer: WebGLRenderer | null = null;
     let city: Group | null = null;
+    let grid: Group | null = null;
     let hitTargets: Group | null = null;
     let signs: Sprite[] = [];
     let highlight: Mesh | null = null;
@@ -1342,7 +1449,7 @@ export default function TorontoCityViewer({
 
     (async () => {
       try {
-        const { data, fromTiger } = await loadMassingData();
+        const [{ data, fromTiger }, gridData] = await Promise.all([loadMassingData(), loadGrid()]);
         if (disposed) return;
 
         const electric = data.buildings.filter(isElectrifiedBuilding);
@@ -1365,6 +1472,10 @@ export default function TorontoCityViewer({
         const cn = data.landmarks?.cnTower;
         city.add(buildCnTower(cn?.x ?? 0, cn?.z ?? 0));
         scene.add(city);
+        if (gridData) {
+          grid = buildGridMesh(gridData, electric);
+          scene.add(grid);
+        }
         setLabeled(matches.length);
         setSearchTargets(
           matches.map((m) => {

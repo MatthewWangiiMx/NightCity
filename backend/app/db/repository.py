@@ -330,7 +330,7 @@ def list_buildings_for_loads(limit: int = 1200) -> list[dict]:
                        ST_X(ST_Centroid(geom)) AS lon,
                        ST_Y(ST_Centroid(geom)) AS lat,
                        ST_Area(geography(ST_Force2D(geom))) AS footprint_m2
-                FROM buildings
+                FROM buildings b
                 WHERE geom && ST_MakeEnvelope(:lon_min, :lat_min, :lon_max, :lat_max, 4326)
                 ORDER BY COALESCE(height_m, 0) DESC
                 LIMIT :limit
@@ -461,15 +461,17 @@ def list_buildings_for_massing(
         rows = s.execute(
             text(
                 """
-                SELECT id, source_file, source_id, height_m, levels, properties,
-                       ST_AsGeoJSON(geom)::json AS geojson
+                SELECT b.id, b.source_file, b.source_id, b.height_m, b.levels, b.properties,
+                       ST_AsGeoJSON(b.geom)::json AS geojson,
+                       bn.transformer_id AS node_id
                 FROM buildings
-                WHERE geom && ST_MakeEnvelope(:lon_min, :lat_min, :lon_max, :lat_max, 4326)
+                LEFT JOIN building_nodes bn ON bn.building_id = b.id
+                WHERE b.geom && ST_MakeEnvelope(:lon_min, :lat_min, :lon_max, :lat_max, 4326)
                   AND ST_Intersects(
-                        geom,
+                        b.geom,
                         ST_MakeEnvelope(:lon_min, :lat_min, :lon_max, :lat_max, 4326)
                       )
-                ORDER BY COALESCE(height_m, 0) DESC
+                ORDER BY COALESCE(b.height_m, 0) DESC
                 LIMIT :limit
                 """
             ),

@@ -7,3 +7,7 @@ psycopg[binary]>=3.2.10
 python-dotenv>=1.0
 httpx>=0.28
 anthropic>=0.42
+# PostGIS building import support
+geopandas>=1.0
+geoalchemy2>=0.15
+psycopg2-binary>=2.9

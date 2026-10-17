@@ -992,7 +992,7 @@ export default function TorontoCityViewer({
   const { profile: ewrbProfile, status: ewrbStatus, load: loadEwrb, clear: clearEwrb } =
     useEwrbProfile();
   const [cityReady, setCityReady] = useState(false);
-  const [gridVisible, setGridVisible] = useState(true);
+  const [gridVisible, setGridVisible] = useState(false);
   const [searchTargets, setSearchTargets] = useState<SearchTarget[]>([]);
   const gridRef = useRef<Group | null>(null);
   const gridVisibleRef = useRef(gridVisible);

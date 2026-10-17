@@ -1095,7 +1095,9 @@ export default function TorontoCityViewer({
   const [labeled, setLabeled] = useState(0);
   const [electricity, setElectricity] = useState<BuildingElectricity | null>(null);
   const [cityReady, setCityReady] = useState(false);
+  const [gridVisible, setGridVisible] = useState(true);
   const [searchTargets, setSearchTargets] = useState<SearchTarget[]>([]);
+  const gridRef = useRef<Group | null>(null);
   const selectRef = useRef<(pick: BuildingPick | null) => void>(() => {});
   const flyToRef = useRef<(target: SearchTarget) => void>(() => {});
   const unlockFlyRef = useRef<() => void>(() => {});
@@ -1144,7 +1146,6 @@ export default function TorontoCityViewer({
     let controls: PointerLockControls | null = null;
     let renderer: WebGLRenderer | null = null;
     let city: Group | null = null;
-    let grid: Group | null = null;
     let hitTargets: Group | null = null;
     let signs: Sprite[] = [];
     let highlight: Mesh | null = null;
@@ -1473,7 +1474,9 @@ export default function TorontoCityViewer({
         city.add(buildCnTower(cn?.x ?? 0, cn?.z ?? 0));
         scene.add(city);
         if (gridData) {
-          grid = buildGridMesh(gridData, electric);
+          const grid = buildGridMesh(gridData, electric);
+          grid.visible = gridVisible;
+          gridRef.current = grid;
           scene.add(grid);
         }
         setLabeled(matches.length);
@@ -1526,6 +1529,7 @@ export default function TorontoCityViewer({
         highlight.geometry.dispose();
         (highlight.material as MeshBasicMaterial).dispose();
       }
+      gridRef.current = null;
       if (city) {
         city.traverse((obj) => {
           if (obj instanceof Mesh || obj instanceof InstancedMesh) {
@@ -1553,6 +1557,10 @@ export default function TorontoCityViewer({
     };
   }, []);
 
+  useEffect(() => {
+    if (gridRef.current) gridRef.current.visible = gridVisible;
+  }, [gridVisible]);
+
   const exploreUi = mode === 'explore';
 
   return (
@@ -1562,12 +1570,35 @@ export default function TorontoCityViewer({
       {exploreUi && (
         <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-start justify-between gap-4 p-4">
           <div className="pointer-events-auto">
-            <Link
-              to="/"
-              className="rounded-md border border-nc-border/80 bg-nc-panel/80 px-3 py-1.5 text-sm backdrop-blur-md transition hover:border-nc-renew"
-            >
-              ← NightCity
-            </Link>
+            <div className="flex items-center gap-3">
+              <Link
+                to="/"
+                className="rounded-md border border-nc-border/80 bg-nc-panel/80 px-3 py-1.5 text-sm backdrop-blur-md transition hover:border-nc-renew"
+              >
+                ← NightCity
+              </Link>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={gridVisible}
+                aria-label="Toggle grid"
+                onClick={() => setGridVisible((visible) => !visible)}
+                className="flex items-center gap-3 rounded-md border border-nc-border/60 bg-nc-panel/70 px-3 py-2 text-xs uppercase tracking-[0.16em] text-nc-text backdrop-blur-md transition hover:border-cyan-300/70"
+              >
+                <span>Powergrid</span>
+                <span
+                  className={`relative h-6 w-12 rounded-full transition ${
+                    gridVisible ? 'bg-cyan-400/80' : 'bg-slate-600/80'
+                  }`}
+                >
+                  <span
+                    className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition-[left] ${
+                      gridVisible ? 'left-7' : 'left-1'
+                    }`}
+                  />
+                </span>
+              </button>
+            </div>
           </div>
           <div className="rounded-md border border-nc-border/60 bg-nc-panel/70 px-3 py-2 text-right backdrop-blur-md">
             <div className="text-sm font-semibold tracking-wide">Toronto</div>

@@ -53,6 +53,13 @@ const WIN_GAP_X = 1.1;
 const WIN_LIT_CHANCE = 0.5;
 const SIGN_VISIBLE_M = 1100;
 
+export type CityViewMode = 'preview' | 'zoom' | 'explore';
+
+const PREVIEW_LOOK = new Vector3(40, 90, -80);
+const EXPLORE_POS = new Vector3(80, 140, 520);
+const EXPLORE_LOOK = new Vector3(0, 180, 0);
+const ZOOM_MS = 1600;
+
 const MOVE = {
   forward: false,
   back: false,
@@ -634,15 +641,36 @@ function Metric({
   );
 }
 
-export default function TorontoCityViewer() {
+function easeInOutCubic(t: number) {
+  return t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
+}
+
+export default function TorontoCityViewer({
+  mode = 'explore',
+  onZoomComplete,
+}: {
+  mode?: CityViewMode;
+  onZoomComplete?: () => void;
+}) {
   const mountRef = useRef<HTMLDivElement>(null);
+  const modeRef = useRef<CityViewMode>(mode);
+  const onZoomCompleteRef = useRef(onZoomComplete);
   const [locked, setLocked] = useState(false);
   const [status, setStatus] = useState('Loading Toronto 3D Massing…');
   const [error, setError] = useState<string | null>(null);
   const [credit, setCredit] = useState('City of Toronto Open Data · 3D Massing');
   const [labeled, setLabeled] = useState(0);
   const [electricity, setElectricity] = useState<BuildingElectricity | null>(null);
+  const [cityReady, setCityReady] = useState(false);
   const selectRef = useRef<(pick: BuildingPick | null) => void>(() => {});
+
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
+
+  useEffect(() => {
+    onZoomCompleteRef.current = onZoomComplete;
+  }, [onZoomComplete]);
 
   useEffect(() => {
     selectRef.current = (pick) => {
@@ -676,13 +704,20 @@ export default function TorontoCityViewer() {
     let signs: Sprite[] = [];
     let highlight: Mesh | null = null;
 
+    let zoomActive = false;
+    let zoomStart = 0;
+    let zoomFromPos = new Vector3();
+    let zoomFromLook = new Vector3();
+    let lastMode: CityViewMode = modeRef.current;
+
     const scene = new Scene();
     scene.background = new Color('#02060d');
     scene.fog = new Fog('#02060d', 500, 2600);
 
     const camera = new PerspectiveCamera(68, 1, 0.8, 5000);
-    camera.position.set(80, 140, 520);
-    camera.lookAt(0, 180, 0);
+    // Start in cinematic preview framing (farther / higher).
+    camera.position.set(620, 280, 720);
+    camera.lookAt(PREVIEW_LOOK);
 
     renderer = new WebGLRenderer({
       antialias: true,
@@ -770,12 +805,23 @@ export default function TorontoCityViewer() {
 
     const onClick = () => {
       if (!ready || !controls) return;
+      if (modeRef.current !== 'explore') return;
       if (!controls.isLocked) {
         controls.lock();
         return;
       }
       // While flying: click = inspect building under crosshair
       pickAtCenter();
+    };
+
+    const beginZoom = () => {
+      if (zoomActive) return;
+      zoomActive = true;
+      zoomStart = performance.now();
+      zoomFromPos = camera.position.clone();
+      // Approximate look target from current orientation
+      zoomFromLook = camera.getWorldDirection(new Vector3()).multiplyScalar(400).add(camera.position);
+      if (controls?.isLocked) controls.unlock();
     };
 
     const resize = () => {
@@ -801,8 +847,40 @@ export default function TorontoCityViewer() {
       const now = performance.now();
       const delta = Math.min((now - prevTime) / 1000, 0.05);
       prevTime = now;
+      const viewMode = modeRef.current;
 
-      if (controls.isLocked) {
+      if (viewMode === 'zoom' && lastMode !== 'zoom') beginZoom();
+      lastMode = viewMode;
+
+      if (viewMode !== 'explore' && controls.isLocked) controls.unlock();
+
+      if (viewMode === 'preview' && ready && !zoomActive) {
+        const t = now * 0.00012;
+        const radius = 780;
+        camera.position.set(
+          Math.cos(t) * radius,
+          250 + Math.sin(t * 0.65) * 40,
+          Math.sin(t) * radius * 0.85 + 180,
+        );
+        camera.lookAt(PREVIEW_LOOK);
+      } else if (zoomActive) {
+        const u = Math.min(1, (now - zoomStart) / ZOOM_MS);
+        const e = easeInOutCubic(u);
+        camera.position.lerpVectors(zoomFromPos, EXPLORE_POS, e);
+        const look = new Vector3().lerpVectors(zoomFromLook, EXPLORE_LOOK, e);
+        camera.lookAt(look);
+        // Subtle FOV punch for “dive in” feel
+        camera.fov = 68 - e * 8;
+        camera.updateProjectionMatrix();
+        if (u >= 1) {
+          zoomActive = false;
+          camera.fov = 68;
+          camera.updateProjectionMatrix();
+          camera.position.copy(EXPLORE_POS);
+          camera.lookAt(EXPLORE_LOOK);
+          onZoomCompleteRef.current?.();
+        }
+      } else if (viewMode === 'explore' && controls.isLocked) {
         const base = MOVE.sprint ? 180 : 70;
         const accel = base * 8;
 
@@ -830,7 +908,12 @@ export default function TorontoCityViewer() {
       }
 
       // Distance-scale futuristic signs so names stay readable in flight.
+      const showSigns = viewMode !== 'preview';
       for (const sign of signs) {
+        if (!showSigns) {
+          sign.visible = false;
+          continue;
+        }
         const anchor = sign.userData.anchor as { x: number; y: number; z: number };
         const dist = camera.position.distanceTo(sign.position);
         const visible = dist < SIGN_VISIBLE_M;
@@ -839,7 +922,6 @@ export default function TorontoCityViewer() {
         const base = sign.userData.baseScale as { x: number; y: number };
         const s = Math.min(2.8, Math.max(0.85, dist / 280));
         sign.scale.set(base.x * s, base.y * s, 1);
-        // Gentle bob
         sign.position.y = anchor.y + Math.sin(now * 0.0015 + anchor.x * 0.01) * 1.2;
       }
 
@@ -873,7 +955,14 @@ export default function TorontoCityViewer() {
         scene.add(city);
         setLabeled(matches.length);
         ready = true;
+        setCityReady(true);
         setStatus('');
+
+        // If we landed directly on explore, snap to explore framing.
+        if (modeRef.current === 'explore') {
+          camera.position.copy(EXPLORE_POS);
+          camera.lookAt(EXPLORE_LOOK);
+        }
       } catch (err) {
         if (!disposed) {
           setError(err instanceof Error ? err.message : 'Could not load Toronto 3D Massing data.');
@@ -924,28 +1013,32 @@ export default function TorontoCityViewer() {
     };
   }, []);
 
+  const exploreUi = mode === 'explore';
+
   return (
-    <div className="relative h-screen w-full overflow-hidden bg-nc-bg">
+    <div className="absolute inset-0 h-full w-full overflow-hidden bg-nc-bg">
       <div ref={mountRef} className="absolute inset-0 [&>canvas]:block [&>canvas]:h-full [&>canvas]:w-full" />
 
-      <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-4 p-4">
-        <div className="pointer-events-auto">
-          <Link
-            to="/"
-            className="rounded-md border border-nc-border/80 bg-nc-panel/80 px-3 py-1.5 text-sm backdrop-blur-md transition hover:border-nc-renew"
-          >
-            ← NightCity
-          </Link>
-        </div>
-        <div className="rounded-md border border-nc-border/60 bg-nc-panel/70 px-3 py-2 text-right backdrop-blur-md">
-          <div className="text-sm font-semibold tracking-wide">Toronto</div>
-          <div className="text-[11px] uppercase tracking-[0.16em] text-nc-muted">
-            {labeled > 0 ? `${labeled} nameplates · click to inspect` : 'Electrified massing'}
+      {exploreUi && (
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-start justify-between gap-4 p-4">
+          <div className="pointer-events-auto">
+            <Link
+              to="/"
+              className="rounded-md border border-nc-border/80 bg-nc-panel/80 px-3 py-1.5 text-sm backdrop-blur-md transition hover:border-nc-renew"
+            >
+              ← NightCity
+            </Link>
+          </div>
+          <div className="rounded-md border border-nc-border/60 bg-nc-panel/70 px-3 py-2 text-right backdrop-blur-md">
+            <div className="text-sm font-semibold tracking-wide">Toronto</div>
+            <div className="text-[11px] uppercase tracking-[0.16em] text-nc-muted">
+              {labeled > 0 ? `${labeled} nameplates · click to inspect` : 'Electrified massing'}
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
-      {locked && (
+      {exploreUi && locked && (
         <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2">
           <div className="h-5 w-5 -translate-y-px">
             <div className="absolute left-1/2 top-0 h-2 w-px -translate-x-1/2 bg-cyan-300/90" />
@@ -956,17 +1049,17 @@ export default function TorontoCityViewer() {
         </div>
       )}
 
-      {electricity && (
+      {exploreUi && electricity && (
         <ElectricityPanel data={electricity} onClose={() => setElectricity(null)} />
       )}
 
-      {status && !error && (
-        <div className="absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-nc-border/80 bg-nc-panel/85 px-8 py-5 text-sm text-nc-muted backdrop-blur-md">
+      {status && !error && mode !== 'zoom' && (
+        <div className="absolute left-1/2 top-1/2 z-20 -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-nc-border/80 bg-nc-panel/85 px-8 py-5 text-sm text-nc-muted backdrop-blur-md">
           {status}
         </div>
       )}
 
-      {!locked && !error && !status && (
+      {exploreUi && cityReady && !locked && !error && !status && (
         <button
           type="button"
           className="absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-nc-border/80 bg-nc-panel/85 px-8 py-6 text-center shadow-xl shadow-black/50 backdrop-blur-md transition hover:border-nc-renew"
@@ -986,23 +1079,25 @@ export default function TorontoCityViewer() {
       )}
 
       {error && (
-        <div className="absolute left-1/2 top-1/2 z-10 w-[min(28rem,90vw)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-nc-alert/50 bg-nc-panel/90 p-6 text-center backdrop-blur-md">
+        <div className="absolute left-1/2 top-1/2 z-20 w-[min(28rem,90vw)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-nc-alert/50 bg-nc-panel/90 p-6 text-center backdrop-blur-md">
           <div className="text-lg font-semibold text-nc-alert">Could not load city</div>
           <p className="mt-2 text-sm text-nc-muted">{error}</p>
         </div>
       )}
 
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between gap-4 p-3">
-        <a
-          href="https://open.toronto.ca/dataset/3d-massing/"
-          target="_blank"
-          rel="noreferrer"
-          className="pointer-events-auto text-[11px] text-nc-muted underline-offset-2 hover:text-nc-text hover:underline"
-        >
-          open.toronto.ca/dataset/3d-massing
-        </a>
-        <p className="max-w-[70%] text-right text-[10px] leading-snug text-nc-muted/90">{credit}</p>
-      </div>
+      {exploreUi && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex items-end justify-between gap-4 p-3">
+          <a
+            href="https://open.toronto.ca/dataset/3d-massing/"
+            target="_blank"
+            rel="noreferrer"
+            className="pointer-events-auto text-[11px] text-nc-muted underline-offset-2 hover:text-nc-text hover:underline"
+          >
+            open.toronto.ca/dataset/3d-massing
+          </a>
+          <p className="max-w-[70%] text-right text-[10px] leading-snug text-nc-muted/90">{credit}</p>
+        </div>
+      )}
     </div>
   );
 }

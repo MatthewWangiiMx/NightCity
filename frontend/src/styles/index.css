@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+/* Night City palette: dark control-room surface, cyan grid, green renewable,
+   amber flexible load, red disruption. */
+@theme {
+  --color-nc-bg: #06131c;
+  --color-nc-panel: #0b1f2b;
+  --color-nc-border: #16384a;
+  --color-nc-text: #dbeef5;
+  --color-nc-muted: #7fa6b6;
+  --color-nc-grid: #38bdf8;      /* grid flow */
+  --color-nc-renew: #34d399;     /* renewable flow */
+  --color-nc-flex: #fbbf24;      /* flexible load */
+  --color-nc-alert: #f05252;     /* disruption */
+}
+
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: var(--color-nc-bg);
+  color: var(--color-nc-text);
+  font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+}

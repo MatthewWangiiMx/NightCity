@@ -16,4 +16,11 @@ dist/
 .DS_Store
 Thumbs.db
 
+# Local data processing
+tmp/
+
+# Building data extracts (large, not source)
+backend/scripts/buildings/data/*
+!backend/scripts/buildings/data/.gitkeep
+
 

@@ -3,7 +3,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 
 const NAV = [
   { to: '/simulate', label: 'Simulate' },
-  { to: '/explore', label: 'Explore' },
+  { to: '/explore', label: 'Explore City' },
   { to: '/plan', label: 'Plan' },
 ];
 
@@ -24,11 +24,14 @@ export function Wordmark({ size = 'md' }: { size?: 'md' | 'lg' }) {
 }
 
 export default function AppShell({ children }: { children: ReactNode }) {
-  const onHome = useLocation().pathname === '/';
+  const path = useLocation().pathname;
+  const onHome = path === '/';
+  const onExploreCity = path === '/explore';
+  const fullBleed = onHome || onExploreCity;
 
   return (
     <div className="flex min-h-full flex-col">
-      {!onHome && (
+      {!fullBleed && (
         <header className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-nc-border/80 bg-nc-panel/40 px-6 py-3 backdrop-blur-md">
           <NavLink to="/">
             <Wordmark />
@@ -64,7 +67,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         </header>
       )}
 
-      <main className="flex-1 p-4">{children}</main>
+      <main className={`flex-1 ${fullBleed ? '' : 'p-4'}`}>{children}</main>
     </div>
   );
 }

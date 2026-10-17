@@ -77,6 +77,8 @@ type SearchTarget = {
   x: number;
   z: number;
   h: number;
+  /** World Y of the floating nameplate (fly-to look target). */
+  plateY: number;
   footprint_m2: number;
 };
 
@@ -400,22 +402,44 @@ function mergeChunks(geos: ExtrudeGeometry[], material: Material, group: Group) 
   }
 }
 
-function addLandmarkExtras(match: MatchedLandmark, group: Group) {
+/** Same top height the extruded mesh uses (avg/max + optional black crown). */
+function buildingVisualTop(building: MassingBuilding): { buildH: number; crownH: number } {
+  const h = building.h;
+  const buildH = building.max_h != null && building.max_h > h ? building.max_h : h;
+  const crownH = buildH >= 90 ? Math.min(28, buildH * 0.14) : 0;
+  return { buildH, crownH };
+}
+
+/** World Y of the landmark nameplate — keep in sync with sign placement. */
+function landmarkNameplateY(
+  match: MatchedLandmark,
+  building?: MassingBuilding,
+): number {
+  if (match.landmark.id === 'cn-tower') return 570;
+  if (match.landmark.id === 'rogers-centre') return match.h + 28;
+  const visual = building ? buildingVisualTop(building) : null;
+  const roofY = visual?.buildH ?? match.h;
+  const hasCrown = (visual?.crownH ?? 0) > 0;
+  return roofY + (hasCrown ? 16 : 22);
+}
+
+function addLandmarkExtras(match: MatchedLandmark, group: Group, roofY?: number) {
   const accent = new MeshBasicMaterial({ color: '#67e8f9' });
   const shell = new MeshStandardMaterial({
     color: '#0c1520',
     roughness: 0.85,
     metalness: 0.18,
   });
+  const roof = roofY ?? match.h;
 
   // Rooftop HUD ring — Rogers sits higher so the stand clears the bowl roof.
-  const ringY = match.landmark.id === 'rogers-centre' ? match.h + 8 : match.h + 2.5;
+  const ringY = match.landmark.id === 'rogers-centre' ? match.h + 8 : roof + 2.5;
   const ring = new Mesh(new CylinderGeometry(8, 8, 0.6, 24, 1, true), accent);
   ring.position.set(match.x, ringY, match.z);
   group.add(ring);
 
   // Corner beacons
-  const beaconY = match.landmark.id === 'rogers-centre' ? match.h + 6.5 : match.h + 1.2;
+  const beaconY = match.landmark.id === 'rogers-centre' ? match.h + 6.5 : roof + 1.2;
   for (const [dx, dz] of [
     [6, 6],
     [-6, 6],
@@ -439,7 +463,7 @@ function addLandmarkExtras(match: MatchedLandmark, group: Group) {
 
   if (match.landmark.kind === 'hotel' || match.landmark.kind === 'tower') {
     const spire = new Mesh(new CylinderGeometry(0.5, 1.4, 16, 8), accent);
-    spire.position.set(match.x, match.h + 10, match.z);
+    spire.position.set(match.x, roof + 10, match.z);
     group.add(spire);
   }
 }
@@ -629,7 +653,14 @@ function buildCityMesh(
 
   // Named landmarks only — massing/TigerData rows have no building names.
   for (const match of matches) {
-    if (match.landmark.id !== 'cn-tower') addLandmarkExtras(match, group);
+    const building =
+      match.buildingIndex >= 0 ? buildings[match.buildingIndex] : undefined;
+    const visual = building ? buildingVisualTop(building) : null;
+    // Sit on the true mesh top (including black crown), not avg-height mid-roof.
+    const roofY = visual?.buildH ?? match.h;
+    const hasCrown = (visual?.crownH ?? 0) > 0;
+
+    if (match.landmark.id !== 'cn-tower') addLandmarkExtras(match, group, roofY);
     else {
       const cnHit = new Mesh(new CylinderGeometry(18, 22, 553, 12), hitMat);
       cnHit.position.set(match.x, 276, match.z);
@@ -658,11 +689,10 @@ function buildCityMesh(
     const sign = createFuturisticSign(label, kind);
     const sx = match.x;
     const sz = match.z;
-    let lift = match.landmark.id === 'cn-tower' ? 570 : match.h + 22;
+    const lift = landmarkNameplateY(match, building);
 
     // Rogers Centre: centre of the roof, plate forced visible above the stand.
     if (match.landmark.id === 'rogers-centre') {
-      lift = match.h + 28;
       const mat = sign.material as SpriteMaterial;
       mat.depthTest = false;
       mat.depthWrite = false;
@@ -672,6 +702,15 @@ function buildCityMesh(
       const base = sign.userData.baseScale as { x: number; y: number };
       sign.scale.set(base.x * 1.35, base.y * 1.35, 1);
       sign.userData.baseScale = { x: base.x * 1.35, y: base.y * 1.35 };
+    }
+
+    // Crowned towers: keep the plate above the black cap in the middle.
+    if (hasCrown && match.landmark.id !== 'cn-tower') {
+      const mat = sign.material as SpriteMaterial;
+      mat.depthTest = false;
+      mat.depthWrite = false;
+      mat.needsUpdate = true;
+      sign.renderOrder = 15;
     }
 
     sign.position.set(sx, lift, sz);
@@ -833,11 +872,7 @@ function ElectricityPanel({
       </div>
 
       <div className="mt-4 grid grid-cols-2 gap-2 text-sm">
-        <Metric label="Avg height" value={`${(data.construction.avg_h ?? data.height_m).toLocaleString()} m`} accent />
-        <Metric
-          label="Max height"
-          value={data.construction.max_h != null ? `${data.construction.max_h.toLocaleString()} m` : '—'}
-        />
+        <Metric label="Height" value={`${(data.construction.avg_h ?? data.height_m).toLocaleString()} m`} accent />
         <Metric label="Footprint" value={`${data.footprint_m2.toLocaleString()} m²`} />
         <Metric
           label="Levels"
@@ -1256,13 +1291,13 @@ export default function TorontoCityViewer({
       unlockFlyRef.current();
       zoomActive = false;
 
-      // Frame near the nameplate (typically ~h+22), not a wide skyline pullback.
-      const plateY = target.h + 22;
+      // Frame on the floating nameplate, not the old blue roof ring.
+      const plateY = target.plateY;
       const lookY = Math.max(18, plateY);
       const dist = Math.max(36, Math.min(95, target.h * 0.22 + 42));
       const toPos = new Vector3(
         target.x + dist * 0.65,
-        Math.max(28, plateY + dist * 0.12),
+        Math.max(28, plateY + dist * 0.18),
         target.z + dist * 0.78,
       );
       const toLook = new Vector3(target.x, lookY, target.z);
@@ -1443,16 +1478,21 @@ export default function TorontoCityViewer({
         }
         setLabeled(matches.length);
         setSearchTargets(
-          matches.map((m) => ({
-            id: m.landmark.id,
-            name: m.landmark.name,
-            short: m.landmark.short,
-            kind: m.landmark.kind ?? 'structure',
-            x: m.x,
-            z: m.z,
-            h: m.h,
-            footprint_m2: m.footprint_m2,
-          })),
+          matches.map((m) => {
+            const building =
+              m.buildingIndex >= 0 ? electric[m.buildingIndex] : undefined;
+            return {
+              id: m.landmark.id,
+              name: m.landmark.name,
+              short: m.landmark.short,
+              kind: m.landmark.kind ?? 'structure',
+              x: m.x,
+              z: m.z,
+              h: m.h,
+              plateY: landmarkNameplateY(m, building),
+              footprint_m2: m.footprint_m2,
+            };
+          }),
         );
         ready = true;
         setCityReady(true);

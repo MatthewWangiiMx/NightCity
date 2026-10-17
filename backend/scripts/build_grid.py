@@ -137,6 +137,64 @@ def _local_points(buildings: list[Building], origin: tuple[float, float]) -> dic
     }
 
 
+def _cluster_buildings(
+    buildings: list[Building],
+    local: dict[int, tuple[float, float]],
+    count: int,
+) -> list[list[Building]]:
+    """Deterministically partition buildings into spatially separated clusters."""
+    ordered = sorted(buildings, key=lambda b: (local[b.building_id][0], local[b.building_id][1], b.building_id))
+    centers = [local[ordered[0].building_id]]
+    while len(centers) < min(count, len(ordered)):
+        candidate = max(
+            ordered,
+            key=lambda b: (
+                min(math.dist(local[b.building_id], center) for center in centers),
+                -b.building_id,
+            ),
+        )
+        centers.append(local[candidate.building_id])
+
+    assignments: dict[int, int] = {}
+    for building in ordered:
+        assignments[building.building_id] = min(
+            range(len(centers)),
+            key=lambda index: (math.dist(local[building.building_id], centers[index]), index),
+        )
+    for _ in range(8):
+        clusters = [[] for _ in centers]
+        for building in ordered:
+            clusters[assignments[building.building_id]].append(building)
+        new_centers = [
+            (
+                sum(local[b.building_id][0] for b in members) / len(members),
+                sum(local[b.building_id][1] for b in members) / len(members),
+            )
+            if members
+            else centers[index]
+            for index, members in enumerate(clusters)
+        ]
+        new_assignments = {
+            building.building_id: min(
+                range(len(new_centers)),
+                key=lambda index: (
+                    math.dist(local[building.building_id], new_centers[index]),
+                    index,
+                ),
+            )
+            for building in ordered
+        }
+        if new_assignments == assignments:
+            break
+        centers = new_centers
+        assignments = new_assignments
+
+    clusters = [[] for _ in centers]
+    for building in ordered:
+        clusters[assignments[building.building_id]].append(building)
+    return [members for members in clusters if members]
+
+
 def _write_massing_node_ids(path: Path, transformers: list[tuple[str, float, float]]) -> None:
     if not path.is_file():
         return
@@ -166,13 +224,10 @@ def build(url: str, massing_path: Path = MASSING_PATH, grid_path: Path = GRID_PA
         origin = (-79.3871, 43.6426)
         local = _local_points(buildings, origin)
 
-        ordered_buildings = sorted(
-            buildings, key=lambda b: (local[b.building_id][0], local[b.building_id][1], b.building_id)
-        )
-        chunk_size = math.ceil(len(ordered_buildings) / TRANSFORMER_COUNT)
+        clusters = _cluster_buildings(buildings, local, TRANSFORMER_COUNT)
         transformers = [
-            (f"transformer-{i:02d}", ordered_buildings[start:start + chunk_size])
-            for i, start in enumerate(range(0, len(ordered_buildings), chunk_size), 1)
+            (f"transformer-{i:02d}", members)
+            for i, members in enumerate(clusters, 1)
         ]
         transformer_points = [
             (node_id, sum(local[b.building_id][0] for b in members) / len(members),
@@ -180,9 +235,20 @@ def build(url: str, massing_path: Path = MASSING_PATH, grid_path: Path = GRID_PA
             for node_id, members in transformers
         ]
         transformer_points.sort(key=lambda item: (item[1], item[2], item[0]))
+        network_center = (
+            sum(point[1] for point in transformer_points) / len(transformer_points),
+            sum(point[2] for point in transformer_points) / len(transformer_points),
+        )
+        angular = sorted(
+            transformer_points,
+            key=lambda point: (
+                math.atan2(point[2] - network_center[1], point[1] - network_center[0]),
+                point[0],
+            ),
+        )
         feeder_for: dict[str, str] = {}
-        feeder_size = max(1, math.ceil(len(transformer_points) / FEEDER_COUNT))
-        for index, (node_id, _, _) in enumerate(transformer_points):
+        feeder_size = math.ceil(len(angular) / FEEDER_COUNT)
+        for index, (node_id, _, _) in enumerate(angular):
             feeder_for[node_id] = f"feeder-{min(index // feeder_size + 1, FEEDER_COUNT):02d}"
 
         assignments: dict[int, str] = {}

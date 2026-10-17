@@ -14,6 +14,7 @@ import {
   InstancedMesh,
   Line,
   LineBasicMaterial,
+  LineSegments,
   type Material,
   Matrix4,
   Mesh,
@@ -47,6 +48,7 @@ import {
 const MASSING_CACHE_URL = '/data/toronto-massing.json';
 const MASSING_API_URL = '/api/buildings/massing';
 const GRID_URL = '/data/grid.json';
+const BUILDING_LINK_RADIUS_M = 250;
 
 /** Only keep structures tall enough to be occupied / electrified buildings. */
 const MIN_ELECTRIC_HEIGHT_M = 10;
@@ -142,7 +144,7 @@ async function loadGrid(): Promise<GridData | null> {
   }
 }
 
-function buildGridMesh(data: GridData): Group {
+function buildGridMesh(data: GridData, buildings: MassingBuilding[]): Group {
   const group = new Group();
   group.name = 'distribution-grid';
   const byId = new Map(data.nodes.map((node) => [node.node_id, node]));
@@ -183,6 +185,33 @@ function buildGridMesh(data: GridData): Group {
     puck.renderOrder = 20;
     puck.position.set(node.x, 12, node.z);
     group.add(puck);
+  }
+  const buildingLinkPoints: Vector3[] = [];
+  for (const building of buildings) {
+    if (!building.node_id || !building.rings[0]?.length) continue;
+    const transformer = byId.get(building.node_id);
+    if (!transformer || transformer.node_type !== 'transformer') continue;
+    const center = ringCentroid(building.rings[0]);
+    if (Math.hypot(center.x - transformer.x, center.z - transformer.z) > BUILDING_LINK_RADIUS_M) {
+      continue;
+    }
+    buildingLinkPoints.push(
+      new Vector3(transformer.x, 7, transformer.z),
+      new Vector3(center.x, 5, center.z),
+    );
+  }
+  if (buildingLinkPoints.length) {
+    const buildingLinks = new LineSegments(
+      new BufferGeometry().setFromPoints(buildingLinkPoints),
+      new LineBasicMaterial({
+        color: '#67e8f9',
+        transparent: true,
+        opacity: 0.18,
+        depthTest: false,
+      }),
+    );
+    buildingLinks.renderOrder = 19;
+    group.add(buildingLinks);
   }
   return group;
 }
@@ -1409,7 +1438,7 @@ export default function TorontoCityViewer({
         city.add(buildCnTower(cn?.x ?? 0, cn?.z ?? 0));
         scene.add(city);
         if (gridData) {
-          grid = buildGridMesh(gridData);
+          grid = buildGridMesh(gridData, electric);
           scene.add(grid);
         }
         setLabeled(matches.length);

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   AmbientLight,
+  BufferAttribute,
   BufferGeometry,
   BoxGeometry,
   Color,
@@ -46,6 +47,23 @@ import {
   matchLandmarksToBuildings,
   type MatchedLandmark,
 } from '@/components/map/torontoLandmarks';
+import { api } from '@/api/client';
+import type { EwrbEuiRow } from '@/api/types';
+
+/** A top-5 row carrying its label and enough geometry to fly the camera to it. */
+type NamedEuiRow = EwrbEuiRow & {
+  name?: string | null;
+  target?: SearchTarget;
+};
+import {
+  euiGradientCss,
+  euiLinearColor,
+  BAND_BASE,
+  EUI_TOP_COLOR,
+  EUI_TOP_N,
+  WINDOW_BASE,
+  type EuiScale,
+} from '@/components/map/euiColor';
 import BuildingEnergyPanel from '@/components/panels/BuildingEnergyPanel';
 import { useEwrbProfile } from '@/hooks/useEwrb';
 import type { ScenarioKind } from '@/api/types';
@@ -90,6 +108,17 @@ type SearchTarget = {
   /** World Y of the floating nameplate (fly-to look target). */
   plateY: number;
   footprint_m2: number;
+  /**
+   * Which massing building this target is, when it is one.
+   *
+   * Without it the inspector opens against a synthetic id and reports another
+   * building's reported intensity, so anything that flies to a real building
+   * should carry these.
+   */
+  buildingIndex?: number;
+  /** Matches MassingBuilding.id, which TigerData and the cache type differently. */
+  buildingId?: number | string;
+  levels?: number;
 };
 
 const MOVE = {
@@ -336,7 +365,7 @@ function extrudeUp(shape: Shape, height: number, y0 = 0.02) {
 
 function forEachWindow(
   buildings: MassingBuilding[],
-  visit: (lit: boolean, mat: Matrix4) => void,
+  visit: (lit: boolean, mat: Matrix4, buildingIndex: number) => void,
 ) {
   const _pos = new Vector3();
   const _quat = new Quaternion();
@@ -345,7 +374,8 @@ function forEachWindow(
   const _yAxis = new Vector3(0, 1, 0);
   let seed = 1;
 
-  for (const building of buildings) {
+  for (let buildingIndex = 0; buildingIndex < buildings.length; buildingIndex++) {
+    const building = buildings[buildingIndex];
     if (!isElectrifiedBuilding(building)) continue;
     const outer = building.rings[0];
     const height = building.h;
@@ -393,23 +423,135 @@ function forEachWindow(
           const t = (start + col * (WIN_W + WIN_GAP_X)) / len;
           _pos.set(x1 + dx * t + nx * 0.25, y, z1 + dz * t + nz * 0.25);
           _mat.compose(_pos, _quat, _scale);
-          visit(hash01(seed) < WIN_LIT_CHANCE, _mat);
+          visit(hash01(seed) < WIN_LIT_CHANCE, _mat, buildingIndex);
         }
       }
     }
   }
 }
 
-function mergeChunks(geos: ExtrudeGeometry[], material: Material, group: Group) {
+/** One building's vertex range inside a merged mesh, so it can be tinted later. */
+export type TintSlot = { mesh: Mesh; start: number; count: number; buildingIndex: number };
+
+export type TintTarget = {
+  buildingIndices: number[];
+  slots: TintSlot[];
+  meshes: Mesh[];
+};
+
+function mergeChunks(
+  geos: ExtrudeGeometry[],
+  material: Material,
+  group: Group,
+  tint?: TintTarget,
+) {
   const chunk = 700;
   for (let i = 0; i < geos.length; i += chunk) {
     const slice = geos.slice(i, i + chunk);
+    const counts = slice.map((g) => g.getAttribute('position').count);
+
+    if (tint) {
+      // The colour attribute has to exist before the merge, because reported
+      // EUI arrives after the city is already on screen and is then written
+      // straight into the merged buffer. White leaves the material's own
+      // colour untouched until that happens.
+      slice.forEach((g, j) => {
+        if (!g.getAttribute('color')) {
+          g.setAttribute('color', new BufferAttribute(new Float32Array(counts[j] * 3).fill(1), 3));
+        }
+      });
+    }
+
     const merged = mergeGeometries(slice, false);
     slice.forEach((g) => g.dispose());
     if (!merged) continue;
     merged.computeVertexNormals();
-    group.add(new Mesh(merged, material));
+    const mesh = new Mesh(merged, material);
+    group.add(mesh);
+
+    if (tint) {
+      tint.meshes.push(mesh);
+      let offset = 0;
+      counts.forEach((n, j) => {
+        tint.slots.push({
+          mesh,
+          start: offset,
+          count: n,
+          buildingIndex: tint.buildingIndices[i + j],
+        });
+        offset += n;
+      });
+    }
   }
+}
+
+/**
+ * Recolour lit windows from the reported-EUI ramp.
+ *
+ * Passing a null scale restores the city's own window colour, which is what
+ * switching the layer off does.
+ */
+export function applyEuiWindows(
+  mesh: InstancedMesh | null,
+  buildingByInstance: Int32Array,
+  euiByIndex: Map<number, number>,
+  scale: EuiScale | null,
+  topIndices: Set<number> = new Set(),
+) {
+  if (!mesh) return;
+  const colour = new Color();
+  const base = new Color(WINDOW_BASE).convertSRGBToLinear();
+  const count = Math.min(mesh.count, buildingByInstance.length);
+
+  for (let i = 0; i < count; i++) {
+    if (scale == null) {
+      mesh.setColorAt(i, base);
+      continue;
+    }
+    const idx = buildingByInstance[i];
+    euiLinearColor(
+      idx >= 0 ? euiByIndex.get(idx) ?? null : null,
+      scale,
+      colour,
+      idx >= 0 && topIndices.has(idx),
+      WINDOW_BASE,
+    );
+    mesh.setColorAt(i, colour);
+  }
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+}
+
+/** Paint each building's vertex range with its reported-EUI colour. */
+export function applyEuiTint(
+  slots: TintSlot[],
+  euiByIndex: Map<number, number>,
+  scale: EuiScale | null,
+  topIndices: Set<number> = new Set(),
+) {
+  const colour = new Color();
+  const touched = new Set<Mesh>();
+
+  for (const slot of slots) {
+    const eui = euiByIndex.get(slot.buildingIndex);
+    euiLinearColor(
+      eui ?? null,
+      scale,
+      colour,
+      topIndices.has(slot.buildingIndex),
+      BAND_BASE,
+    );
+    const attr = slot.mesh.geometry.getAttribute('color') as BufferAttribute | undefined;
+    if (!attr) continue;
+    for (let v = slot.start; v < slot.start + slot.count; v++) {
+      attr.setXYZ(v, colour.r, colour.g, colour.b);
+    }
+    touched.add(slot.mesh);
+  }
+
+  touched.forEach((mesh) => {
+    const attr = mesh.geometry.getAttribute('color') as BufferAttribute | undefined;
+    if (attr) attr.needsUpdate = true;
+  });
 }
 
 /** Same top height the extruded mesh uses (avg/max + optional black crown). */
@@ -521,7 +663,16 @@ function buildCityMesh(
   matches: MatchedLandmark[],
   dataSource: BuildingPick['data_source'] = 'massing-cache',
   opts?: { showLabels?: boolean },
-): { group: Group; signs: Sprite[]; hitTargets: Group; litWindows: InstancedMesh | null } {
+): {
+  group: Group;
+  signs: Sprite[];
+  hitTargets: Group;
+  tint: TintTarget;
+  /** Swapped onto the band meshes to turn the EUI colouring on and off. */
+  tintMaterials: { base: Material[]; eui: Material[] };
+  /** Lit-window instances plus the building each one belongs to. */
+  windows: { mesh: InstancedMesh | null; buildingByInstance: Int32Array };
+} {
   const showLabels = opts?.showLabels !== false;
   const group = new Group();
   const signs: Sprite[] = [];
@@ -555,9 +706,19 @@ function buildCityMesh(
     metalness: 0.22,
   });
   const accentMat = new MeshBasicMaterial({ color: '#5eead4' });
+  // The light band that wraps each building carries the EUI colour when the
+  // layer is on. White base so the vertex colour is the whole colour.
+  const accentEuiMat = new MeshBasicMaterial({ color: '#ffffff', vertexColors: true });
 
   const shellGeos: ExtrudeGeometry[] = [];
   const landmarkGeos: ExtrudeGeometry[] = [];
+  // Parallel to the two arrays above, so a merged vertex range can be traced
+  // back to the building it belongs to.
+  const shellIdx: number[] = [];
+  const landmarkIdx: number[] = [];
+  // Parallel to accentGeos: a band's vertex range has to map back to its
+  // building so it can be tinted by that building's reported intensity.
+  const accentIdx: number[] = [];
   const crownGeos: ExtrudeGeometry[] = [];
   const accentGeos: ExtrudeGeometry[] = [];
 
@@ -582,7 +743,13 @@ function buildCityMesh(
     const shaftH = buildH - crownH;
     const shape = makeShape(outer, holes);
     const shaft = extrudeUp(shape, shaftH);
-    (isLandmark ? landmarkGeos : shellGeos).push(shaft);
+    if (isLandmark) {
+      landmarkGeos.push(shaft);
+      landmarkIdx.push(index);
+    } else {
+      shellGeos.push(shaft);
+      shellIdx.push(index);
+    }
 
     if (crownH > 0) {
       const crownShape = makeShape(outer, holes, 3.2);
@@ -592,6 +759,7 @@ function buildCityMesh(
       const bandShape = makeShape(outer, holes, 1.2);
       const band = extrudeUp(bandShape, 1.1, shaftH - 0.2);
       accentGeos.push(band);
+      accentIdx.push(index);
     }
 
     // Mid-tower mechanical belt on very tall buildings
@@ -599,6 +767,7 @@ function buildCityMesh(
       const beltY = buildH * 0.55;
       const belt = extrudeUp(makeShape(outer, holes, 0.8), 2.2, beltY);
       accentGeos.push(belt);
+      accentIdx.push(index);
     }
 
     // Invisible click proxy (raycastable)
@@ -628,7 +797,13 @@ function buildCityMesh(
   mergeChunks(shellGeos, shellMat, group);
   mergeChunks(landmarkGeos, landmarkShellMat, group);
   mergeChunks(crownGeos, crownMat, group);
-  mergeChunks(accentGeos, accentMat, group);
+
+  const tint: TintTarget = { buildingIndices: accentIdx, slots: [], meshes: [] };
+  mergeChunks(accentGeos, accentMat, group, tint);
+  const tintMaterials = {
+    base: tint.meshes.map(() => accentMat as Material),
+    eui: tint.meshes.map(() => accentEuiMat as Material),
+  };
 
   // Windows
   let litTotal = 0;
@@ -639,9 +814,11 @@ function buildCityMesh(
   });
 
   const winGeo = new BoxGeometry(WIN_W, WIN_H, WIN_D);
+  // White material: the per-instance colour multiplies it, so instanceColor
+  // carries the window's whole colour and nothing is tinted twice.
   const litMesh =
     litTotal > 0
-      ? new InstancedMesh(winGeo, new MeshBasicMaterial({ color: '#c8efff' }), litTotal)
+      ? new InstancedMesh(winGeo, new MeshBasicMaterial({ color: '#ffffff' }), litTotal)
       : null;
   const dimMesh =
     dimTotal > 0
@@ -650,13 +827,26 @@ function buildCityMesh(
 
   let litI = 0;
   let dimI = 0;
-  forEachWindow(buildings, (lit, mat) => {
-    if (lit) litMesh?.setMatrixAt(litI++, mat);
-    else dimMesh?.setMatrixAt(dimI++, mat);
+  // Which building each lit instance belongs to, so the windows can be
+  // recoloured once reported intensity arrives.
+  const litBuildingByInstance = new Int32Array(Math.max(1, litTotal)).fill(-1);
+  const unlitColour = new Color(WINDOW_BASE).convertSRGBToLinear();
+  forEachWindow(buildings, (lit, mat, buildingIndex) => {
+    if (lit) {
+      if (litMesh) {
+        litMesh.setMatrixAt(litI, mat);
+        litMesh.setColorAt(litI, unlitColour);
+        litBuildingByInstance[litI] = buildingIndex;
+      }
+      litI += 1;
+    } else {
+      dimMesh?.setMatrixAt(dimI++, mat);
+    }
   });
   if (litMesh) {
     litMesh.name = 'litWindows';
     litMesh.instanceMatrix.needsUpdate = true;
+    if (litMesh.instanceColor) litMesh.instanceColor.needsUpdate = true;
     group.add(litMesh);
   }
   if (dimMesh) {
@@ -746,7 +936,14 @@ function buildCityMesh(
   ground.position.y = -0.05;
   group.add(ground);
 
-  return { group, signs, hitTargets, litWindows: litMesh };
+  return {
+    group,
+    signs,
+    hitTargets,
+    tint,
+    tintMaterials,
+    windows: { mesh: litMesh, buildingByInstance: litBuildingByInstance },
+  };
 }
 
 /** Dim / recolor lit windows for a weather disruption on the 3D massing. */
@@ -760,7 +957,8 @@ function applyScenarioWindowLights(
   const t = Math.min(1, Math.max(0, intensity));
 
   if (!kind || t <= 0.02) {
-    mat.color.set('#c8efff');
+    // White base so per-instance EUI colours carry the window look.
+    mat.color.set('#ffffff');
     mat.transparent = false;
     mat.opacity = 1;
     lit.visible = true;
@@ -801,7 +999,7 @@ function applyScenarioWindowLights(
       lit.visible = true;
       break;
     default:
-      mat.color.set('#c8efff');
+      mat.color.set('#ffffff');
       mat.transparent = false;
       mat.opacity = 1;
       lit.visible = true;
@@ -1010,7 +1208,7 @@ function BuildingSearch({
         />
       </div>
       {open && results.length > 0 && (
-        <ul className="absolute bottom-[calc(100%+0.4rem)] left-0 right-0 max-h-64 overflow-auto rounded-xl border border-cyan-400/30 bg-[#061018]/95 py-1 shadow-xl backdrop-blur-md">
+        <ul className="absolute top-[calc(100%+0.4rem)] left-0 right-0 max-h-64 overflow-auto rounded-xl border border-cyan-400/30 bg-[#061018]/95 py-1 shadow-xl backdrop-blur-md">
           {results.map((t, i) => (
             <li key={t.id}>
               <button
@@ -1031,10 +1229,122 @@ function BuildingSearch({
         </ul>
       )}
       {open && q.length > 0 && results.length === 0 && (
-        <div className="absolute bottom-[calc(100%+0.4rem)] left-0 right-0 rounded-xl border border-nc-border/70 bg-[#061018]/95 px-3 py-2 text-xs text-nc-muted backdrop-blur-md">
+        <div className="absolute top-[calc(100%+0.4rem)] left-0 right-0 rounded-xl border border-nc-border/70 bg-[#061018]/95 px-3 py-2 text-xs text-nc-muted backdrop-blur-md">
           No buildings match “{query.trim()}”
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Legend for the reported-EUI colour layer.
+ *
+ * A sequential ramp is useless without its bounds, so the scale is labelled at
+ * both ends and at the cohort median. The caveat is on the card rather than in
+ * a tooltip, because the single most likely misreading - bright equals badly
+ * run - needs to be visible at the same moment as the colours.
+ */
+function EuiLegend({
+  scale,
+  top,
+  onFly,
+}: {
+  scale: EuiScale;
+  top: NamedEuiRow[];
+  onFly: (target: SearchTarget) => void;
+}) {
+  return (
+    <div className="pointer-events-auto absolute bottom-4 left-4 z-20 w-[min(19rem,calc(100vw-2rem))] rounded-xl border border-amber-400/30 bg-[#061018]/92 p-3 shadow-2xl shadow-amber-500/10 backdrop-blur-md">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-red-300/90">
+          Heaviest 25%
+        </span>
+        <span className="text-[10px] text-nc-muted">kWh/m²·yr</span>
+      </div>
+      <div className="text-[10px] text-nc-muted/80">Windows and roof band</div>
+
+      {/* Only the painted quartile appears on the ramp */}
+      <div
+        className="mt-2 h-2.5 rounded-full"
+        style={{ background: euiGradientCss() }}
+      />
+      <div className="mt-1 flex justify-between text-[10px] tabular-nums text-nc-muted">
+        <span>{Math.round(scale.p75).toLocaleString()}</span>
+        <span>{Math.round(scale.p95).toLocaleString()}+</span>
+      </div>
+      <div className="flex justify-between text-[9px] uppercase tracking-wide text-nc-muted/70">
+        <span>cutoff · dim</span>
+        <span>worst · bright</span>
+      </div>
+
+      <div className="mt-2 space-y-1 text-[10px] text-nc-muted">
+        <div className="flex items-center gap-1.5">
+          <span
+            aria-hidden
+            className="h-2.5 w-2.5 rounded-sm"
+            style={{ background: WINDOW_BASE }}
+          />
+          <span>Under {Math.round(scale.p75).toLocaleString()} — unchanged</span>
+          <span className="ml-auto tabular-nums">
+            {Math.round(scale.n * 0.75).toLocaleString()}
+          </span>
+        </div>
+        <div className="text-[10px] text-nc-muted/70">
+          {scale.n.toLocaleString()} buildings matched to a reported cohort
+        </div>
+      </div>
+
+      {/* The heaviest few, named: the deep red is too dark to carry this alone */}
+      {top.length > 0 && (
+        <div className="mt-2.5 border-t border-nc-border/60 pt-2">
+          <div className="mb-1.5 flex items-center gap-1.5">
+            <span
+              aria-hidden
+              className="h-2.5 w-2.5 shrink-0 rounded-sm"
+              style={{ background: EUI_TOP_COLOR }}
+            />
+            <span className="text-[10px] uppercase tracking-wide text-nc-muted">
+              {top.length} heaviest buildings
+            </span>
+            <span className="ml-auto text-[9px] text-nc-muted/60">click to fly</span>
+          </div>
+          <ol className="space-y-0.5">
+            {top.map((row, i) => (
+              <li key={row.id}>
+                <button
+                  type="button"
+                  disabled={!row.target}
+                  onClick={() => row.target && onFly(row.target)}
+                  title={row.target ? 'Fly to this building' : 'Location unavailable'}
+                  className="flex w-full items-baseline gap-2 rounded px-1 py-0.5 text-left text-[10px] transition hover:bg-red-400/10 disabled:cursor-default disabled:hover:bg-transparent"
+                >
+                  <span className="w-3 shrink-0 tabular-nums text-nc-muted/70">{i + 1}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-nc-text">
+                      {row.name ?? row.property_type}
+                    </span>
+                    <span className="block truncate text-[9px] text-nc-muted/70">
+                      {row.property_type}
+                      {row.fsa ? ` · ${row.fsa}` : ''}
+                    </span>
+                  </span>
+                  <span className="shrink-0 tabular-nums text-nc-text">
+                    {Math.round(row.eui).toLocaleString()}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+
+      <p className="mt-2 text-[10px] leading-snug text-nc-muted/80">
+        Site energy per m² reported to Ontario EWRB by comparable properties. Only the
+        heaviest quarter is coloured; every other building is left as it is. Raw intensity mixes
+        building type with performance — a hospital out-consumes a warehouse by design,
+        so brighter does not by itself mean worse-run.
+      </p>
     </div>
   );
 }
@@ -1080,8 +1390,28 @@ export default function TorontoCityViewer({
   const [cityReady, setCityReady] = useState(false);
   const [gridVisible, setGridVisible] = useState(false);
   const [searchTargets, setSearchTargets] = useState<SearchTarget[]>([]);
+  // Reported-EUI colour layer: off by default so the city keeps its own look.
+  const [euiVisible, setEuiVisible] = useState(false);
+  const [euiScale, setEuiScale] = useState<EuiScale | null>(null);
+  const [euiTop, setEuiTop] = useState<NamedEuiRow[]>([]);
+  const [euiStatus, setEuiStatus] = useState<'idle' | 'loading' | 'ready' | 'unavailable'>(
+    'idle',
+  );
   const gridRef = useRef<Group | null>(null);
   const gridVisibleRef = useRef(gridVisible);
+  const tintRef = useRef<TintTarget | null>(null);
+  const tintMaterialsRef = useRef<{ base: Material[]; eui: Material[] } | null>(null);
+  const windowsRef = useRef<{
+    mesh: InstancedMesh | null;
+    buildingByInstance: Int32Array;
+  } | null>(null);
+  const euiPaintRef = useRef<{
+    byIndex: Map<number, number>;
+    scale: EuiScale | null;
+    topIndices: Set<number>;
+  }>({ byIndex: new Map(), scale: null, topIndices: new Set() });
+  const euiVisibleRef = useRef(euiVisible);
+
   const selectRef = useRef<(pick: BuildingPick | null) => void>(() => {});
   const flyToRef = useRef<(target: SearchTarget) => void>(() => {});
   const unlockFlyRef = useRef<() => void>(() => {});
@@ -1093,6 +1423,35 @@ export default function TorontoCityViewer({
   useEffect(() => {
     gridVisibleRef.current = gridVisible;
   }, [gridVisible]);
+
+  useEffect(() => {
+    euiVisibleRef.current = euiVisible;
+  }, [euiVisible]);
+
+
+  // Toggling the layer swaps materials rather than rebuilding geometry, so the
+  // vertex colours written once stay valid and the switch is instant.
+  useEffect(() => {
+    const tint = tintRef.current;
+    const mats = tintMaterialsRef.current;
+    if (!tint || !mats) return;
+    tint.meshes.forEach((mesh, i) => {
+      const next = euiVisible ? mats.eui[i] : mats.base[i];
+      if (next) mesh.material = next;
+    });
+
+    const windows = windowsRef.current;
+    const paint = euiPaintRef.current;
+    if (windows) {
+      applyEuiWindows(
+        windows.mesh,
+        windows.buildingByInstance,
+        paint.byIndex,
+        euiVisible ? paint.scale : null,
+        paint.topIndices,
+      );
+    }
+  }, [euiVisible, euiStatus]);
 
   useEffect(() => {
     onZoomCompleteRef.current = onZoomComplete;
@@ -1364,13 +1723,15 @@ export default function TorontoCityViewer({
       };
 
       const pick: BuildingPick = {
-        buildingIndex: -2,
+        buildingIndex: target.buildingIndex ?? -2,
+        buildingId: target.buildingId,
         name: target.short ?? target.name,
         kind: target.kind,
         h: target.h,
         footprint_m2: target.footprint_m2,
         x: target.x,
         z: target.z,
+        levels: target.levels,
         data_source: 'massing-cache',
       };
       selectRef.current(pick);
@@ -1581,7 +1942,10 @@ export default function TorontoCityViewer({
         city = built.group;
         signs = built.signs;
         hitTargets = built.hitTargets;
-        litWindowsRef.current = built.litWindows;
+        tintRef.current = built.tint;
+        tintMaterialsRef.current = built.tintMaterials;
+        windowsRef.current = built.windows;
+        litWindowsRef.current = built.windows.mesh;
         applyScenarioWindowLights(
           litWindowsRef.current,
           scenarioRef.current.kind,
@@ -1602,6 +1966,110 @@ export default function TorontoCityViewer({
           gridRef.current = mesh;
           scene.add(mesh);
         }
+        if (!isBackdrop) {
+          // Ids must match the click path exactly, or a building's colour would
+          // disagree with the EUI its own panel reports.
+          const idForIndex = (i: number) =>
+            electric[i].id != null ? `tiger-${electric[i].id}` : `b-${i}`;
+          const idToIndex = new Map<string, number>();
+          // Same label the inspector shows, so the legend and the panel agree.
+          const nameByIndex = new Map<number, string>();
+          // Kept so a top-5 row can fly the camera to its building.
+          const targetByIndex = new Map<number, SearchTarget>();
+          const payload = electric.map((b, i) => {
+            const id = idForIndex(i);
+            idToIndex.set(id, i);
+            const outer = b.rings[0];
+            const match = matches.find((m) => m.buildingIndex === i);
+            nameByIndex.set(
+              i,
+              match?.landmark.short ??
+                match?.landmark.name ??
+                `Building · ${Math.round(b.h)}m`,
+            );
+            const bbox = ringBBox(outer);
+            const { lat, lon } = localToLonLat(bbox.cx, bbox.cz);
+            const footprint = match?.footprint_m2 ?? ringArea(outer);
+            const kind = match?.landmark.kind ?? (b.h >= 80 ? 'office' : 'structure');
+            targetByIndex.set(i, {
+              id,
+              name: nameByIndex.get(i) ?? id,
+              short: match?.landmark.short,
+              kind,
+              x: bbox.cx,
+              z: bbox.cz,
+              h: b.h,
+              plateY: match ? landmarkNameplateY(match, b) : b.h + 22,
+              footprint_m2: footprint,
+              buildingIndex: i,
+              buildingId: b.id,
+              levels: b.levels,
+            });
+            return {
+              id,
+              footprint_m2: footprint,
+              kind,
+              h: b.h,
+              levels: b.levels ?? null,
+              lat,
+              lon,
+            };
+          });
+
+          setEuiStatus('loading');
+          api
+            .ewrbBuildingEuis(payload)
+            .then((res) => {
+              if (disposed) return;
+              const byIndex = new Map<number, number>();
+              res.buildings.forEach((row) => {
+                const idx = idToIndex.get(row.id);
+                if (idx != null) byIndex.set(idx, row.eui);
+              });
+              // The few heaviest buildings get their own colour, so pick them
+              // from the reported rows rather than from a threshold.
+              const ranked = [...res.buildings].sort((a, b) => b.eui - a.eui);
+              const top = ranked.slice(0, EUI_TOP_N);
+              const topIndices = new Set<number>();
+              top.forEach((row) => {
+                const idx = idToIndex.get(row.id);
+                if (idx != null) topIndices.add(idx);
+              });
+
+              if (built.tint.slots.length) {
+                applyEuiTint(built.tint.slots, byIndex, res.scale, topIndices);
+              }
+
+              euiPaintRef.current = { byIndex, scale: res.scale, topIndices };
+              // Covers the layer being switched on while this was in flight.
+              applyEuiWindows(
+                built.windows.mesh,
+                built.windows.buildingByInstance,
+                byIndex,
+                euiVisibleRef.current ? res.scale : null,
+                topIndices,
+              );
+
+              setEuiTop(
+                top.map((row) => {
+                  const idx = idToIndex.get(row.id);
+                  return {
+                    ...row,
+                    name: idx != null ? nameByIndex.get(idx) ?? null : null,
+                    target: idx != null ? targetByIndex.get(idx) : undefined,
+                  };
+                }),
+              );
+              setEuiScale(res.scale);
+              setEuiStatus('ready');
+            })
+            .catch(() => {
+              if (disposed) return;
+              setEuiScale(null);
+              setEuiStatus('unavailable');
+            });
+        }
+
         setLabeled(isBackdrop ? 0 : matches.length);
         if (!isBackdrop) {
           setSearchTargets(
@@ -1618,6 +2086,9 @@ export default function TorontoCityViewer({
                 h: m.h,
                 plateY: landmarkNameplateY(m, building),
                 footprint_m2: m.footprint_m2,
+                buildingIndex: m.buildingIndex >= 0 ? m.buildingIndex : undefined,
+                buildingId: building?.id,
+                levels: building?.levels,
               };
             }),
           );
@@ -1762,7 +2233,51 @@ export default function TorontoCityViewer({
                   />
                 </span>
               </button>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={euiVisible}
+                aria-label="Toggle reported energy intensity colouring"
+                disabled={euiStatus !== 'ready'}
+                onClick={() => setEuiVisible((visible) => !visible)}
+                title={
+                  euiStatus === 'unavailable'
+                    ? 'EWRB dataset not loaded'
+                    : 'Colour buildings by reported site energy intensity'
+                }
+                className="flex items-center gap-3 rounded-md border border-nc-border/60 bg-nc-panel/70 px-3 py-2 text-xs uppercase tracking-[0.16em] text-nc-text backdrop-blur-md transition hover:border-amber-300/70 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <span>Energy Use</span>
+                <span
+                  className={`relative h-6 w-12 rounded-full transition ${
+                    euiVisible ? 'bg-amber-400/80' : 'bg-slate-600/80'
+                  }`}
+                >
+                  <span
+                    className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition-[left] ${
+                      euiVisible ? 'left-7' : 'left-1'
+                    }`}
+                  />
+                </span>
+              </button>
             </div>
+
+            {/*
+              Directly under the toggles. The detail panel is anchored top-right
+              and runs most of the viewport height, so the bottom-right corner
+              is not reliably visible.
+            */}
+            {!simulateUi && cityReady && searchTargets.length > 0 && (
+              <div className="mt-2">
+                <BuildingSearch
+                  targets={searchTargets}
+                  onActivate={() => unlockFlyRef.current()}
+                  onSelect={(target) => {
+                    flyToRef.current(target);
+                  }}
+                />
+              </div>
+            )}
           </div>
           <div className="rounded-md border border-nc-border/60 bg-nc-panel/70 px-3 py-2 text-right backdrop-blur-md">
             <div className="text-sm font-semibold tracking-wide">Toronto</div>
@@ -1786,6 +2301,14 @@ export default function TorontoCityViewer({
             <div className="absolute right-0 top-1/2 h-px w-2 -translate-y-1/2 bg-cyan-300/90" />
           </div>
         </div>
+      )}
+
+      {exploreUi && euiVisible && euiScale && (
+        <EuiLegend
+          scale={euiScale}
+          top={euiTop}
+          onFly={(target) => flyToRef.current(target)}
+        />
       )}
 
       {!simulateUi && showCityChrome && electricity && (
@@ -1838,18 +2361,14 @@ export default function TorontoCityViewer({
         </div>
       )}
 
+      {/*
+        The bottom bar sits hard right: the energy-use legend owns the
+        bottom-left corner, and a card that tall would cover anything placed
+        there. Search lives under the top-left toggles instead.
+      */}
       {showCityChrome && (
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex items-end justify-between gap-4 p-3">
-          <div className="flex flex-col gap-2">
-            {!simulateUi && cityReady && searchTargets.length > 0 && (
-              <BuildingSearch
-                targets={searchTargets}
-                onActivate={() => unlockFlyRef.current()}
-                onSelect={(target) => {
-                  flyToRef.current(target);
-                }}
-              />
-            )}
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex items-end justify-end gap-4 p-3">
+          <div className="flex flex-col items-end gap-2">
             <a
               href="https://open.toronto.ca/dataset/3d-massing/"
               target="_blank"
@@ -1858,8 +2377,10 @@ export default function TorontoCityViewer({
             >
               open.toronto.ca/dataset/3d-massing
             </a>
+            <p className="max-w-[min(22rem,calc(100vw-1.5rem))] text-right text-[10px] leading-snug text-nc-muted/90">
+              {credit}
+            </p>
           </div>
-          <p className="max-w-[50%] text-right text-[10px] leading-snug text-nc-muted/90">{credit}</p>
         </div>
       )}
 

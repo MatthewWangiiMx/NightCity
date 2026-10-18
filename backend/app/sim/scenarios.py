@@ -24,8 +24,8 @@ SCENARIOS: dict[ScenarioKind, Scenario] = {
         description="Shared storage goes offline mid-event.",
     ),
     ScenarioKind.STORM: Scenario(
-        id="storm", kind=ScenarioKind.STORM, label="Storm / Outage",
-        description="Natural disaster takes generation and lines out of service.",
+        id="storm", kind=ScenarioKind.STORM, label="Thunderstorm",
+        description="A thunderstorm takes generation and lines out of service.",
     ),
 }
 

@@ -210,6 +210,76 @@ def read_building_profile(
     return {"source": SOURCE, **profile}
 
 
+@router.post("/buildings/eui")
+def read_building_euis(
+    buildings: list[dict[str, Any]],
+    city: str = Query("Toronto"),
+) -> dict[str, Any]:
+    """Reported site EUI per building, lean enough to colour a whole city.
+
+    The 3D viewer draws well over a thousand footprints, so this returns only
+    what a colour scale needs rather than a full profile each. The scale bounds
+    come back with it, computed over this very set, so the ramp spans the
+    buildings actually on screen instead of a hardcoded guess.
+    """
+    _require_dataset()
+    if len(buildings) > 6000:
+        raise HTTPException(status_code=413, detail="Send at most 6000 buildings per call")
+
+    out: list[dict[str, Any]] = []
+    for item in buildings:
+        footprint = item.get("footprint_m2")
+        if not footprint:
+            continue
+        profile = ewrb_profile.build_profile(
+            building_id=str(item.get("id")),
+            name="",
+            kind=item.get("kind"),
+            footprint_m2=float(footprint),
+            height_m=float(item["h"]) if item.get("h") else None,
+            levels=int(item["levels"]) if item.get("levels") else None,
+            lat=float(item["lat"]) if item.get("lat") else None,
+            lon=float(item["lon"]) if item.get("lon") else None,
+            city=city,
+        )
+        if profile is None:
+            continue
+        eui = profile["intensity"]["site_eui_kwh_m2"]
+        if eui is None:
+            continue
+        out.append(
+            {
+                "id": profile["building_id"],
+                "eui": eui,
+                "property_type": profile["property_type"],
+                "percentile": profile["benchmark"]["site_eui_percentile"],
+                "fsa": profile["fsa"],
+            }
+        )
+
+    values = sorted(r["eui"] for r in out)
+    scale = None
+    if values:
+        # p05/p95 bounds: a couple of legitimate extremes would otherwise flatten
+        # the ramp so that every ordinary building reads as the same colour.
+        def pct(q: float) -> float:
+            return values[min(len(values) - 1, int(round(q * (len(values) - 1))))]
+
+        scale = {
+            "min": values[0],
+            "p05": pct(0.05),
+            "median": pct(0.50),
+            # p75 is the cutoff the viewer paints from: only the worst quarter
+            # is coloured, so this bound decides which buildings light up.
+            "p75": pct(0.75),
+            "p95": pct(0.95),
+            "max": values[-1],
+            "n": len(values),
+        }
+
+    return {"source": SOURCE, "city": city, "scale": scale, "buildings": out}
+
+
 @router.get("/district/live")
 def read_live_district(
     city: str = Query("Toronto"),

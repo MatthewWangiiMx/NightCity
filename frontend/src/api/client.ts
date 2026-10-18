@@ -5,6 +5,7 @@ import type {
   EwrbBuildingProfile,
   EwrbCitySummary,
   EwrbDistrictRollup,
+  EwrbEuiResponse,
   EwrbFsaArea,
   EwrbMeta,
   EwrbRecordPage,
@@ -126,6 +127,23 @@ export const api = {
     if (building.hour != null) q.set('hour', String(building.hour));
     return request<EwrbBuildingProfile>(`/ewrb/profile?${q.toString()}`);
   },
+  /** Reported site EUI for many buildings at once, to colour the 3D city. */
+  ewrbBuildingEuis: (
+    buildings: {
+      id: string;
+      footprint_m2: number;
+      kind?: string | null;
+      h?: number | null;
+      levels?: number | null;
+      lat?: number | null;
+      lon?: number | null;
+    }[],
+    city = 'Toronto',
+  ) =>
+    request<EwrbEuiResponse>(`/ewrb/buildings/eui?city=${encodeURIComponent(city)}`, {
+      method: 'POST',
+      body: JSON.stringify(buildings),
+    }),
   /** District rollup over the stock in TigerData; 503 when the DB is off. */
   ewrbLiveDistrict: (city = 'Toronto') =>
     request<EwrbDistrictRollup>(`/ewrb/district/live?city=${encodeURIComponent(city)}`),

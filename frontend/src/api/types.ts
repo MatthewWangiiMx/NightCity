@@ -349,3 +349,30 @@ export interface EwrbMeta {
   metrics: Record<string, string>;
   min_cohort_size: number;
 }
+
+/** Bounds the EUI colour ramp is anchored on, over the buildings on screen. */
+export interface EwrbEuiScale {
+  min: number;
+  p05: number;
+  median: number;
+  /** The cutoff the viewer paints from: only the worst quartile is coloured. */
+  p75: number;
+  p95: number;
+  max: number;
+  n: number;
+}
+
+export interface EwrbEuiRow {
+  id: string;
+  eui: number;
+  property_type: string;
+  percentile: number | null;
+  fsa: string | null;
+}
+
+export interface EwrbEuiResponse {
+  source: EwrbSource;
+  city: string;
+  scale: EwrbEuiScale | null;
+  buildings: EwrbEuiRow[];
+}

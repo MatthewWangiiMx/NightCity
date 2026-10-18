@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import csv
 import math
+from bisect import bisect_left
 from collections import defaultdict
 from functools import lru_cache
 from pathlib import Path
@@ -401,12 +402,23 @@ def cohort(
     return summary
 
 
+@lru_cache(maxsize=256)
+def _ranked_values(property_type: str, metric: str) -> tuple[float, ...]:
+    """Sorted plausible values for a province-wide cohort, cached.
+
+    Memoised because colouring a whole city asks for one rank per building:
+    re-sorting the cohort each time made a 1,300-building request take over a
+    second, almost all of it repeated work over the same few hundred rows.
+    """
+    return tuple(sorted(_metric_values(_index()["by_type"].get(property_type, ()), metric)))
+
+
 def percentile_rank(property_type: str, metric: str, value: float) -> float | None:
     """Where `value` sits in its province-wide cohort, 0..100 (lower = leaner)."""
-    vals = sorted(_metric_values(_index()["by_type"].get(property_type, ()), metric))
+    vals = _ranked_values(property_type, metric)
     if len(vals) < MIN_COHORT_N:
         return None
-    return round(100.0 * sum(1 for v in vals if v < value) / len(vals), 1)
+    return round(100.0 * bisect_left(vals, value) / len(vals), 1)
 
 
 def cohort_rows(

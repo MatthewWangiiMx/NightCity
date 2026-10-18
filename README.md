@@ -61,6 +61,9 @@ distribution reports how many it excluded.
 
 ## Run it
 
+All paths below are relative to the repository root — `cd` there first, in each
+terminal.
+
 Backend (Python 3.12+):
 
 ```powershell
@@ -85,6 +88,8 @@ npm run dev        # http://localhost:5173, /api proxied to :8000
 The grid builder requires Python, PostGIS, and a TigerData connection URL. Do
 not commit `backend/.env`; it contains the database credential.
 
+Step 2 changes into `backend/`, and steps 3 to 5 run from there.
+
 1. Configure `backend/.env`:
 
    ```dotenv
@@ -94,7 +99,7 @@ not commit `backend/.env`; it contains the database credential.
 2. Create the Python environment and install backend dependencies:
 
    ```powershell
-   cd C:\Users\Samuel\Documents\htv\NightCity\backend
+   cd backend
    py -3 -m venv .venv
    .\.venv\Scripts\Activate.ps1
    pip install -r requirements.txt
@@ -149,15 +154,17 @@ not commit `backend/.env`; it contains the database credential.
 
 6. Start the app:
 
+   Each terminal starts at the repository root:
+
    ```powershell
    # Terminal 1
-   cd C:\Users\Samuel\Documents\htv\NightCity\backend
+   cd backend
    .\.venv\Scripts\Activate.ps1
    $env:USE_DATABASE = "true"
    uvicorn app.main:app --reload --port 8000
 
    # Terminal 2
-   cd C:\Users\Samuel\Documents\htv\NightCity\frontend
+   cd frontend
    npm install
    npm run dev
    ```

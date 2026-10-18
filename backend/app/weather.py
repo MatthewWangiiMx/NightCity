@@ -94,8 +94,19 @@ def daily_forecast(
         heating = max(0.0, 14.0 - average_temp) * 0.035
         cooling = max(0.0, average_temp - 22.0) * 0.045
         weather_factor = round(1.0 + heating + cooling, 3)
+
+        # Hour-of-day temperature. A forecast day can arrive short (the first
+        # day starts mid-afternoon) so missing hours fall back to the day mean
+        # rather than to zero, which would read as a hard freeze.
+        hourly = [None] * 24  # type: list[float | None]
+        for value in values:
+            if value.temperature_2m_c is not None:
+                hourly[value.observation_time.hour] = value.temperature_2m_c
+        filled = [h if h is not None else average_temp for h in hourly]
+
         days.append(
             DailyWeatherForecast(
+                hourly_temps_c=[round(t, 2) for t in filled],
                 date=date,
                 weather_code=Counter(codes).most_common(1)[0][0] if codes else 0,
                 temp_max_c=max(temperatures) if temperatures else 0.0,
@@ -107,3 +118,64 @@ def daily_forecast(
         )
 
     return DailyWeatherForecastResponse(timezone="UTC", days=days)
+
+
+# --- Daily refresh against TigerData --------------------------------------
+# Open-Meteo publishes a new forecast a few times a day and rate-limits free
+# use. Nothing here needs fresher than daily, so the provider is called at most
+# once per location per day and every other request is served from TigerData.
+FORECAST_REFRESH_HOURS = 24
+
+
+def cached_daily_forecast(request: WeatherRequest) -> DailyWeatherForecastResponse:
+    """Daily forecast, refreshed from Open-Meteo at most once a day.
+
+    Order of preference:
+
+    1. TigerData, when what we hold was written inside the refresh window
+    2. Open-Meteo, saved to TigerData on the way through
+    3. TigerData again, stale, if the provider is unreachable
+
+    Falling back to stale data in (3) is deliberate. A day-old forecast is a
+    far better answer than an error page, and the response says which it is, so
+    nothing downstream has to guess.
+    """
+    # Imported here: app.db pulls in SQLAlchemy and the engine, and this module
+    # is also used in paths that run without a database at all.
+    from app.db import repository
+    from app.db.session import get_engine
+
+    if get_engine() is None:
+        return daily_forecast(request)
+
+    last_at = repository.weather_last_ingest_at(request.latitude, request.longitude)
+    fresh = False
+    if last_at is not None:
+        age = datetime.now(last_at.tzinfo) - last_at
+        fresh = age.total_seconds() < FORECAST_REFRESH_HOURS * 3600
+
+    if fresh:
+        rows = repository.list_weather_forecast(
+            request.latitude, request.longitude, days=request.forecast_days
+        )
+        if rows:
+            response = daily_forecast(request, observations=rows)
+            response.source = "tigerdata-cache"
+            return response
+
+    try:
+        observations = fetch_forecast(request)
+        repository.save_weather_observations(observations)
+        response = daily_forecast(request, observations=observations)
+        response.source = "open-meteo"
+        return response
+    except (WeatherApiError, httpx.HTTPError, RuntimeError):
+        # Provider unreachable: serve whatever is stored rather than failing.
+        rows = repository.list_weather_forecast(
+            request.latitude, request.longitude, days=request.forecast_days
+        )
+        if not rows:
+            raise
+        response = daily_forecast(request, observations=rows)
+        response.source = "tigerdata-stale"
+        return response

@@ -8,7 +8,11 @@ from app.schemas.models import (
     WeatherObservation,
     WeatherRequest,
 )
-from app.weather import WeatherApiError, daily_forecast, fetch_forecast
+from app.weather import (
+    WeatherApiError,
+    cached_daily_forecast,
+    fetch_forecast,
+)
 
 router = APIRouter(prefix="/weather", tags=["weather"])
 
@@ -19,9 +23,14 @@ def read_weather_forecast(
     longitude: float = Query(-79.3832, ge=-180, le=180),
     forecast_days: int = Query(16, ge=1, le=16),
 ) -> DailyWeatherForecastResponse:
-    """Fetch daily Open-Meteo data for plan experiments without requiring the DB."""
+    """Daily forecast for the Plan page, cached in TigerData.
+
+    Open-Meteo is called at most once a day per location; every other request
+    is served from the database. Falls through to a direct call when the
+    database is off, so the page still works without it.
+    """
     try:
-        return daily_forecast(
+        return cached_daily_forecast(
             WeatherRequest(
                 latitude=latitude,
                 longitude=longitude,

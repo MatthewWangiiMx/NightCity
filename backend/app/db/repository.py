@@ -5,6 +5,7 @@ so a database outage degrades the demo to in-memory instead of breaking it.
 """
 
 import json
+from datetime import datetime
 
 from sqlalchemy import text
 
@@ -241,6 +242,63 @@ def latest_run_id(district_id: str) -> str | None:
             ),
             {"district_id": district_id},
         ).scalar()
+
+
+def weather_last_ingest_at(latitude: float, longitude: float) -> datetime | None:
+    """When this location's forecast was last written, or None if never.
+
+    Drives the once-a-day refresh: Open-Meteo is only called when what we hold
+    has gone stale, so ordinary page loads read from TigerData instead of
+    hitting the provider on every request.
+    """
+    with get_session() as s:
+        if s is None:
+            return None
+        row = s.execute(
+            text(
+                """
+                SELECT MAX(created_at) AS last_at
+                FROM weather_observations
+                WHERE ABS(latitude - :lat) < 0.05 AND ABS(longitude - :lon) < 0.05
+                """
+            ),
+            {"lat": latitude, "lon": longitude},
+        ).mappings().first()
+    return row["last_at"] if row and row["last_at"] else None
+
+
+def list_weather_forecast(
+    latitude: float,
+    longitude: float,
+    *,
+    days: int = 16,
+) -> list[WeatherObservation]:
+    """Cached forward-looking hourly weather for a location, oldest first.
+
+    Only hours from the start of today onward: the table also holds the days
+    that have already passed, and a forecast page asking for 16 days means the
+    next 16, not the last 16.
+    """
+    with get_session() as s:
+        if s is None:
+            return []
+        rows = s.execute(
+            text(
+                """
+                SELECT observation_time, latitude, longitude, temperature_2m_c,
+                       precipitation_mm, wind_speed_10m_kmh, weather_code
+                FROM weather_observations
+                WHERE ABS(latitude - :lat) < 0.05
+                  AND ABS(longitude - :lon) < 0.05
+                  AND observation_time >= date_trunc('day', now())
+                  AND observation_time < date_trunc('day', now())
+                      + make_interval(days => :days)
+                ORDER BY observation_time ASC
+                """
+            ),
+            {"lat": latitude, "lon": longitude, "days": days},
+        ).mappings().all()
+    return [WeatherObservation(**dict(row)) for row in rows]
 
 
 def list_weather_observations(
@@ -532,7 +590,11 @@ def save_weather_observations(observations: list[WeatherObservation]) -> int:
                 "temperature_2m_c = EXCLUDED.temperature_2m_c, "
                 "precipitation_mm = EXCLUDED.precipitation_mm, "
                 "wind_speed_10m_kmh = EXCLUDED.wind_speed_10m_kmh, "
-                "weather_code = EXCLUDED.weather_code"
+                "weather_code = EXCLUDED.weather_code, "
+                # Stamped on every write, not just inserts: the refresh check
+                # reads MAX(created_at), and a forecast that only revises hours
+                # we already hold would otherwise never look fresh.
+                "created_at = now()"
             ),
             [observation.model_dump() for observation in observations],
         )

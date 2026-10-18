@@ -173,6 +173,11 @@ class DailyWeatherForecast(BaseModel):
     precip_mm: float
     wind_max_kmh: float
     weather_demand_factor: float
+    # 24 hourly temperatures, index = hour of day. Open-Meteo already returns
+    # these and the daily aggregate used to discard them; the plan's load curve
+    # needs them, because heating demand follows temperature hour by hour and a
+    # daily mean cannot say when the cold actually falls.
+    hourly_temps_c: list[float] = []
 
 
 class DailyWeatherForecastResponse(BaseModel):

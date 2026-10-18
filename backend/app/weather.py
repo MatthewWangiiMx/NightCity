@@ -1,11 +1,17 @@
 """Open-Meteo client and response parsing."""
 
+from collections import Counter
 from datetime import datetime
 
 import httpx
 
 from app.config import get_settings
-from app.schemas.models import WeatherObservation, WeatherRequest
+from app.schemas.models import (
+    DailyWeatherForecast,
+    DailyWeatherForecastResponse,
+    WeatherObservation,
+    WeatherRequest,
+)
 
 
 class WeatherApiError(RuntimeError):
@@ -62,3 +68,42 @@ def fetch_forecast(request: WeatherRequest) -> list[WeatherObservation]:
         except (TypeError, ValueError) as exc:
             raise WeatherApiError("Open-Meteo returned an invalid hourly observation") from exc
     return observations
+
+
+def daily_forecast(
+    request: WeatherRequest,
+    observations: list[WeatherObservation] | None = None,
+) -> DailyWeatherForecastResponse:
+    """Aggregate Open-Meteo hourly observations for the plan page.
+
+    The demand factor is intentionally calculated here, beside the weather
+    provider integration, so the frontend only presents backend-derived data.
+    """
+    observations = observations if observations is not None else fetch_forecast(request)
+    by_date: dict[str, list[WeatherObservation]] = {}
+    for observation in observations:
+        by_date.setdefault(observation.observation_time.date().isoformat(), []).append(observation)
+
+    days: list[DailyWeatherForecast] = []
+    for date, values in sorted(by_date.items()):
+        temperatures = [v.temperature_2m_c for v in values if v.temperature_2m_c is not None]
+        precipitation = [v.precipitation_mm or 0.0 for v in values]
+        wind = [v.wind_speed_10m_kmh or 0.0 for v in values]
+        codes = [v.weather_code for v in values if v.weather_code is not None]
+        average_temp = sum(temperatures) / len(temperatures) if temperatures else 15.0
+        heating = max(0.0, 14.0 - average_temp) * 0.035
+        cooling = max(0.0, average_temp - 22.0) * 0.045
+        weather_factor = round(1.0 + heating + cooling, 3)
+        days.append(
+            DailyWeatherForecast(
+                date=date,
+                weather_code=Counter(codes).most_common(1)[0][0] if codes else 0,
+                temp_max_c=max(temperatures) if temperatures else 0.0,
+                temp_min_c=min(temperatures) if temperatures else 0.0,
+                precip_mm=sum(precipitation),
+                wind_max_kmh=max(wind) if wind else 0.0,
+                weather_demand_factor=weather_factor,
+            )
+        )
+
+    return DailyWeatherForecastResponse(timezone="UTC", days=days)

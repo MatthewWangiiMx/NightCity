@@ -1,5 +1,4 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
 import Panel from '@/components/Panel';
 import GridLoadProfile from '@/components/charts/GridLoadProfile';
 import EnergyMixDonut from '@/components/charts/EnergyMixDonut';
@@ -8,7 +7,6 @@ import EfficiencyHeadroomPanel from '@/components/panels/EfficiencyHeadroomPanel
 import {
   PlanWeatherDayPicker,
   WeatherDayBar,
-  useTorontoForecast,
 } from '@/components/panels/WeatherForecastPanel';
 import { useRun } from '@/hooks/useRun';
 import { ENERGY_MIX } from '@/demo/fixtures';
@@ -67,17 +65,17 @@ function Slider({
 }
 
 /**
- * Plan: pick an Open-Meteo forecast day first, then author a dispatch posture.
+ * Plan: pick a backend-provided weather day first, then author a dispatch posture.
  *
  * The sliders are local state today; wiring them to a rerun means passing them
  * as `params` on the run request. Projected figures are scaled from the current
  * plan and labeled as such — they are not simulator output.
  */
 export default function Plan() {
-  const navigate = useNavigate();
   const { result } = useRun();
-  const forecast = useTorontoForecast();
+  const forecast = usePlanForecast();
   const [selectedDay, setSelectedDay] = useState<DailyForecastDay | null>(null);
+  const [weatherEnabled, setWeatherEnabled] = useState(true);
 
   const [mix, setMix] = useState(
     () => Object.fromEntries(ENERGY_MIX.map((m) => [m.name, m.share])) as Record<string, number>,
@@ -95,9 +93,17 @@ export default function Plan() {
   const lift = renewablePct - plan.renewable_share_pct;
 
   const projected = {
-    peak: Math.round(plan.peak_demand_mw * (1 - lift * 0.004)),
+    peak: Math.round(
+      plan.peak_demand_mw *
+        (1 - lift * 0.004) *
+        (weatherEnabled ? forecast.demandFactors[selectedDay?.date ?? ''] ?? 1 : 1),
+    ),
     renewable: renewablePct,
-    emissions: Math.round(plan.emissions_tco2e * (1 - lift * 0.008)),
+    emissions: Math.round(
+      plan.emissions_tco2e *
+        (1 - lift * 0.008) *
+        (weatherEnabled ? forecast.demandFactors[selectedDay?.date ?? ''] ?? 1 : 1),
+    ),
   };
 
   const rows = [
@@ -120,11 +126,27 @@ export default function Plan() {
             days={forecast.days}
             status={forecast.status}
             error={forecast.error}
-            onPick={setSelectedDay}
+            onPick={(day) => setSelectedDay(day)}
           />
         ) : (
           <div className="flex flex-col gap-4 p-4">
             <WeatherDayBar day={selectedDay} onChangeDay={() => setSelectedDay(null)} />
+            <Panel title="Weather impact" subtitle="Experiment with weather-sensitive demand">
+              <label className="flex items-center justify-between gap-4 text-sm">
+                <span>
+                  <span className="block text-nc-text">Apply weather to energy consumption</span>
+                  <span className="text-xs text-nc-muted">
+                    Uses the selected day&apos;s backend-derived demand factor.
+                  </span>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={weatherEnabled}
+                  onChange={(event) => setWeatherEnabled(event.target.checked)}
+                  className="h-5 w-5 accent-nc-renew"
+                />
+              </label>
+            </Panel>
 
             <div className="grid gap-4 xl:grid-cols-4">
         <Panel
@@ -257,7 +279,6 @@ export default function Plan() {
           </p>
           <button
             type="button"
-            onClick={() => navigate('/simulate', { state: { fromPlanApply: true } })}
             className="rounded-xl bg-nc-renew px-4 py-3 text-sm font-medium text-nc-bg shadow-lg shadow-nc-renew/20 transition hover:brightness-110"
           >
             Apply plan
@@ -272,4 +293,57 @@ export default function Plan() {
       </div>
     </div>
   );
+}
+
+type PlanForecastDay = DailyForecastDay & { weatherDemandFactor: number };
+
+function usePlanForecast() {
+  const [days, setDays] = useState<PlanForecastDay[]>([]);
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/weather/forecast?forecast_days=16')
+      .then((response) => {
+        if (!response.ok) throw new Error(`Weather forecast ${response.status}`);
+        return response.json() as Promise<{
+          days: Array<{
+            date: string;
+            weather_code: number;
+            temp_max_c: number;
+            temp_min_c: number;
+            precip_mm: number;
+            wind_max_kmh: number;
+            weather_demand_factor: number;
+          }>;
+        }>;
+      })
+      .then((payload) => {
+        if (cancelled) return;
+        setDays(
+          payload.days.map((day) => ({
+            date: day.date,
+            weatherCode: day.weather_code,
+            tempMaxC: day.temp_max_c,
+            tempMinC: day.temp_min_c,
+            precipMm: day.precip_mm,
+            windMaxKmh: day.wind_max_kmh,
+            weatherDemandFactor: day.weather_demand_factor,
+          })),
+        );
+        setStatus('ready');
+      })
+      .catch((reason: unknown) => {
+        if (cancelled) return;
+        setError(reason instanceof Error ? reason.message : 'Could not load forecast');
+        setStatus('error');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const demandFactors = Object.fromEntries(days.map((day) => [day.date, day.weatherDemandFactor]));
+  return { days, demandFactors, status, error };
 }

@@ -163,3 +163,19 @@ class WeatherIngestResponse(BaseModel):
     observations_saved: int
     latitude: float
     longitude: float
+
+
+class DailyWeatherForecast(BaseModel):
+    date: str
+    weather_code: int
+    temp_max_c: float
+    temp_min_c: float
+    precip_mm: float
+    wind_max_kmh: float
+    weather_demand_factor: float
+
+
+class DailyWeatherForecastResponse(BaseModel):
+    timezone: str
+    days: list[DailyWeatherForecast]
+    source: str = "open-meteo"

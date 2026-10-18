@@ -2,10 +2,34 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.db import repository
 from app.db.session import get_engine
-from app.schemas.models import WeatherIngestResponse, WeatherObservation, WeatherRequest
-from app.weather import WeatherApiError, fetch_forecast
+from app.schemas.models import (
+    DailyWeatherForecastResponse,
+    WeatherIngestResponse,
+    WeatherObservation,
+    WeatherRequest,
+)
+from app.weather import WeatherApiError, daily_forecast, fetch_forecast
 
 router = APIRouter(prefix="/weather", tags=["weather"])
+
+
+@router.get("/forecast", response_model=DailyWeatherForecastResponse)
+def read_weather_forecast(
+    latitude: float = Query(43.6532, ge=-90, le=90),
+    longitude: float = Query(-79.3832, ge=-180, le=180),
+    forecast_days: int = Query(16, ge=1, le=16),
+) -> DailyWeatherForecastResponse:
+    """Fetch daily Open-Meteo data for plan experiments without requiring the DB."""
+    try:
+        return daily_forecast(
+            WeatherRequest(
+                latitude=latitude,
+                longitude=longitude,
+                forecast_days=forecast_days,
+            )
+        )
+    except WeatherApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.get("/observations", response_model=list[WeatherObservation])

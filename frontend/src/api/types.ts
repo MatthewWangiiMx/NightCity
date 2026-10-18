@@ -97,6 +97,30 @@ export interface WeatherObservation {
   weather_code: number | null;
 }
 
+export interface DailyForecastDay {
+  date: string;
+  weather_code: number;
+  temp_max_c: number;
+  temp_min_c: number;
+  precip_mm: number;
+  wind_max_kmh: number;
+}
+
+export interface DailyForecastResponse {
+  timezone: string;
+  days: DailyForecastDay[];
+  source: string;
+}
+
+export interface PlanApplyResponse {
+  selected_date: string;
+  weather: DailyForecastDay;
+  baseline_metrics: Metrics;
+  plan_metrics: Metrics;
+  weather_demand_factor: number;
+  explanation: string;
+}
+
 export interface RunResult {
   run_id: string;
   scenario: Scenario;

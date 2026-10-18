@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import Panel from '@/components/Panel';
 import GridLoadProfile from '@/components/charts/GridLoadProfile';
 import EnergyMixDonut from '@/components/charts/EnergyMixDonut';
@@ -73,6 +74,7 @@ function Slider({
  * plan and labeled as such — they are not simulator output.
  */
 export default function Plan() {
+  const navigate = useNavigate();
   const { result } = useRun();
   const forecast = useTorontoForecast();
   const [selectedDay, setSelectedDay] = useState<DailyForecastDay | null>(null);
@@ -82,7 +84,6 @@ export default function Plan() {
   );
   const [comfort, setComfort] = useState({ temperature: 22, airQuality: 88, lighting: 96 });
   const [flex, setFlex] = useState({ ev: 60, hvac: 45, industrial: 25 });
-  const [applied, setApplied] = useState(false);
 
   const mixRows = ENERGY_MIX.map((m) => ({ name: m.name, share: mix[m.name] }));
   const total = mixRows.reduce((sum, m) => sum + m.share, 0);
@@ -107,7 +108,6 @@ export default function Plan() {
 
   function setMixValue(name: string, value: number) {
     setMix((prev) => ({ ...prev, [name]: value }));
-    setApplied(false);
   }
 
   return (
@@ -257,10 +257,10 @@ export default function Plan() {
           </p>
           <button
             type="button"
-            onClick={() => setApplied(true)}
+            onClick={() => navigate('/simulate', { state: { fromPlanApply: true } })}
             className="rounded-xl bg-nc-renew px-4 py-3 text-sm font-medium text-nc-bg shadow-lg shadow-nc-renew/20 transition hover:brightness-110"
           >
-            {applied ? 'Plan applied ✓' : 'Apply plan'}
+            Apply plan
           </button>
         </Panel>
 

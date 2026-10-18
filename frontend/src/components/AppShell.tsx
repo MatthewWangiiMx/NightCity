@@ -2,7 +2,6 @@ import type { ReactNode } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 
 const NAV = [
-  { to: '/simulate', label: 'Simulate' },
   { to: '/explore', label: 'Explore City' },
   { to: '/plan', label: 'Plan' },
 ];

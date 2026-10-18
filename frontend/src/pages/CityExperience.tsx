@@ -3,7 +3,6 @@ import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import TorontoCityViewer, { type CityViewMode } from '@/components/map/TorontoCityViewer';
 
 const MODES = [
-  { to: '/simulate', label: 'Simulate', chip: 'MODE' },
   { to: '/explore', label: 'Explore City', chip: 'CITY', explore: true },
   { to: '/plan', label: 'Plan', chip: 'MODE' },
 ];

@@ -10,6 +10,11 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    proxy: { '/api': 'http://localhost:8000' },
+    // 127.0.0.1, not localhost: on Windows localhost resolves to ::1 while
+    // uvicorn binds IPv4 only, which surfaces as an opaque "http proxy error"
+    // and can leave the request hanging rather than failing fast.
+    proxy: {
+      '/api': 'http://127.0.0.1:8000',
+    },
   },
 });

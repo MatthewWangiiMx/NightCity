@@ -400,3 +400,154 @@ export interface EwrbEuiResponse {
   scale: EwrbEuiScale | null;
   buildings: EwrbEuiRow[];
 }
+
+// --- Plan page levers: what-if over measured building energy ---------------
+
+export interface EwrbFuelTotals {
+  elec_mwh: number;
+  gas_mwh: number;
+  site_mwh: number;
+  emissions_tco2e: number;
+  electrified_pct: number | null;
+}
+
+export interface EwrbLeverEffect {
+  lever: 'retrofit' | 'setpoint' | 'lighting' | 'heat_pump' | string;
+  label: string;
+  delta_elec_mwh: number;
+  delta_gas_mwh: number;
+  delta_site_mwh: number;
+  delta_tco2e: number;
+  detail: string;
+}
+
+export interface EwrbPlanResult {
+  source: EwrbSource;
+  city: string;
+  buildings: number;
+  gross_floor_area_m2: number;
+  baseline: EwrbFuelTotals;
+  planned: EwrbFuelTotals;
+  change: {
+    site_mwh: number;
+    site_pct: number | null;
+    elec_mwh: number;
+    elec_pct: number | null;
+    gas_mwh: number;
+    gas_pct: number | null;
+    emissions_tco2e: number;
+    emissions_pct: number | null;
+  };
+  breakdown: EwrbLeverEffect[];
+  peak: EwrbPeakResponse;
+  weather: EwrbWeatherDay;
+  day_curve: EwrbDayCurve;
+  factors: {
+    elec_kg_per_kwh: number;
+    gas_kg_per_kwh: number;
+    source: string;
+  };
+  assumptions: Record<string, string | number>;
+}
+
+/** The knobs the Plan page exposes. */
+export interface EwrbLevers {
+  // Consumption: these change how much energy the district uses in a year.
+  heat_pump_pct: number;
+  heat_pump_cop: number;
+  retrofit_pct: number;
+  retrofit_target_percentile: number;
+  setpoint_widen_c: number;
+  lighting_retrofit_pct: number;
+  // Dispatch: these change the shape of the peak, not the annual total.
+  flex_ev_pct: number;
+  flex_hvac_pct: number;
+  flex_industrial_pct: number;
+  air_quality_floor_pct: number;
+  lighting_floor_pct: number;
+}
+
+/** One forecast day's energy, derived from degree-days. */
+export interface EwrbWeatherDay {
+  available: boolean;
+  temp_c?: number;
+  hdd?: number;
+  cdd?: number;
+  heating_vs_average?: number;
+  cooling_vs_average?: number;
+  day_elec_mwh?: number;
+  day_gas_mwh?: number;
+  day_site_mwh?: number;
+  day_emissions_tco2e?: number;
+  average_day_site_mwh?: number;
+  vs_average_pct?: number | null;
+  baseline_day_site_mwh?: number;
+  baseline_day_emissions_tco2e?: number;
+  driver?: string;
+  precip_mm?: number;
+  note?: string;
+}
+
+/** The forecast day the plan is evaluated against. */
+export interface EwrbPlanDay {
+  day_temp_c: number;
+  day_weather_code?: number;
+  day_wind_kmh?: number;
+  day_precip_mm?: number;
+  /** 24 hourly temperatures for the day; drives the HVAC shape of the curve. */
+  day_hourly_temps_c?: number[];
+}
+
+/** Hourly electricity for the selected day, baseline against plan. */
+export interface EwrbDayCurve {
+  available: boolean;
+  hours?: number[];
+  baseline_mw?: number[];
+  planned_mw?: number[];
+  baseline_peak_mw?: number;
+  planned_peak_mw?: number;
+  baseline_peak_hour?: number;
+  planned_peak_hour?: number;
+  planned_day_elec_mwh?: number;
+  /** True when real hourly temperatures shaped the HVAC component. */
+  weather_driven?: boolean;
+  heat_pump_day_mwh?: number;
+  /** Extra electricity because COP falls with outdoor temperature. */
+  cop_penalty_mwh?: number;
+  effective_cop?: number | null;
+  rated_cop?: number;
+  note?: string;
+}
+
+export interface EwrbPeakAction {
+  action: string;
+  label: string;
+  mw: number;
+  kind: 'shifted' | 'shed' | string;
+  detail: string;
+}
+
+export interface EwrbPeakResponse {
+  available: boolean;
+  peak_hour?: number;
+  baseline_peak_mw?: number;
+  planned_peak_mw?: number;
+  reduction_mw?: number;
+  reduction_pct?: number;
+  actions?: EwrbPeakAction[];
+  note?: string;
+}
+
+/** One building's own before/after, from the same lever engine. */
+export interface EwrbBuildingPlan extends EwrbPlanResult {
+  building: {
+    id: string;
+    name: string;
+    property_type: string;
+    fsa: string | null;
+    gross_floor_area_m2: number;
+    site_eui_kwh_m2: number | null;
+    energy_star_score: number | null;
+    percentile: number | null;
+  };
+}

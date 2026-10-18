@@ -65,6 +65,8 @@ import {
   type EuiScale,
 } from '@/components/map/euiColor';
 import BuildingEnergyPanel from '@/components/panels/BuildingEnergyPanel';
+import BuildingPlanCompare from '@/components/panels/BuildingPlanCompare';
+import type { EwrbLevers, EwrbPlanDay } from '@/api/types';
 import { useEwrbProfile } from '@/hooks/useEwrb';
 import type { ScenarioKind } from '@/api/types';
 
@@ -1355,6 +1357,8 @@ export default function TorontoCityViewer({
   scenarioKind,
   effectIntensity = 0,
   variant = 'default',
+  planLevers = null,
+  planDay = null,
   className = '',
 }: {
   mode?: CityViewMode;
@@ -1367,6 +1371,9 @@ export default function TorontoCityViewer({
    * Hides Explore home chrome; city fills the parent panel.
    */
   variant?: 'default' | 'simulate';
+  /** Applied plan, so a clicked building can show today against the plan. */
+  planLevers?: Partial<EwrbLevers> | null;
+  planDay?: Partial<EwrbPlanDay> | null;
   className?: string;
 }) {
   const mountRef = useRef<HTMLDivElement>(null);
@@ -1391,7 +1398,8 @@ export default function TorontoCityViewer({
   const [gridVisible, setGridVisible] = useState(false);
   const [searchTargets, setSearchTargets] = useState<SearchTarget[]>([]);
   // Reported-EUI colour layer: off by default so the city keeps its own look.
-  const [euiVisible, setEuiVisible] = useState(false);
+  // On the results page the colouring is the whole point, so it starts on.
+  const [euiVisible, setEuiVisible] = useState(variant === 'simulate');
   const [euiScale, setEuiScale] = useState<EuiScale | null>(null);
   const [euiTop, setEuiTop] = useState<NamedEuiRow[]>([]);
   const [euiStatus, setEuiStatus] = useState<'idle' | 'loading' | 'ready' | 'unavailable'>(
@@ -1555,11 +1563,24 @@ export default function TorontoCityViewer({
       camera.lookAt(PREVIEW_LOOK);
     }
 
-    renderer = new WebGLRenderer({
-      antialias: true,
-      powerPreference: 'high-performance',
-      logarithmicDepthBuffer: true,
-    });
+    // A browser will refuse a context once too many are live, and three throws
+    // from the constructor when it does. Unhandled, that takes the whole app
+    // down with it; the city is one panel, so it fails as one panel instead.
+    try {
+      renderer = new WebGLRenderer({
+        antialias: true,
+        powerPreference: 'high-performance',
+        logarithmicDepthBuffer: true,
+      });
+    } catch (err) {
+      setError(
+        'The browser could not create a WebGL context — usually too many 3D views open at once. ' +
+          'Close other tabs using 3D, or fully restart the browser. ' +
+          (err instanceof Error ? err.message : String(err)),
+      );
+      setStatus('');
+      return;
+    }
     renderer.setClearColor(0x02060d);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
     mount.appendChild(renderer.domElement);
@@ -1654,6 +1675,35 @@ export default function TorontoCityViewer({
       scene.add(box);
     };
 
+    /**
+     * Pick under the cursor. The orbit view has no crosshair, so the pointer
+     * position is the selection, unlike the locked fly view which picks centre.
+     */
+    const pickAtPointer = (event: MouseEvent) => {
+      if (!hitTargets || !ready || !renderer) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      const ndc = new Vector2(
+        ((event.clientX - rect.left) / rect.width) * 2 - 1,
+        -((event.clientY - rect.top) / rect.height) * 2 + 1,
+      );
+      raycaster.setFromCamera(ndc, camera);
+      const hits = raycaster.intersectObjects(hitTargets.children, false);
+      if (!hits.length) {
+        selectRef.current(null);
+        if (highlight) {
+          scene.remove(highlight);
+          highlight.geometry.dispose();
+          (highlight.material as MeshBasicMaterial).dispose();
+          highlight = null;
+        }
+        return;
+      }
+      const pick = hits[0].object.userData.pick as BuildingPick | undefined;
+      if (!pick) return;
+      selectRef.current(pick);
+      showHighlight(pick);
+    };
+
     const pickAtCenter = () => {
       if (!hitTargets || !ready) return;
       raycaster.setFromCamera(pointer, camera);
@@ -1674,12 +1724,13 @@ export default function TorontoCityViewer({
       showHighlight(pick);
     };
 
-    const onClick = () => {
+    const onClick = (event: MouseEvent) => {
       if (!ready) return;
       if (typingInField()) return;
-      // Simulate orbit view: picture only — no fly lock / street entry.
+      // Orbit view: no fly lock or street entry, but buildings are inspectable.
       if (simulateOrbit) {
         if (orbit) orbit.autoRotate = false;
+        pickAtPointer(event);
         return;
       }
       if (!controls) return;
@@ -2168,6 +2219,12 @@ export default function TorontoCityViewer({
         scene.remove(gridRef.current);
         gridRef.current = null;
       }
+      // dispose() frees three's own GPU resources but leaves the WebGL context
+      // itself alive until the canvas is collected, and a browser allows only
+      // ~16 at once. StrictMode mounts twice and every HMR update remounts, so
+      // without an explicit context loss a dev session runs out of contexts and
+      // every later view fails to start until the browser is restarted.
+      renderer?.forceContextLoss();
       renderer?.dispose();
       if (renderer?.domElement.parentElement === mount) {
         mount.removeChild(renderer.domElement);
@@ -2303,7 +2360,7 @@ export default function TorontoCityViewer({
         </div>
       )}
 
-      {exploreUi && euiVisible && euiScale && (
+      {showCityChrome && euiVisible && euiScale && (
         <EuiLegend
           scale={euiScale}
           top={euiTop}
@@ -2311,7 +2368,11 @@ export default function TorontoCityViewer({
         />
       )}
 
-      {!simulateUi && showCityChrome && electricity && (
+      {showCityChrome && electricity && planLevers && (
+        <BuildingPlanCompare geometry={electricity} levers={planLevers} day={planDay} />
+      )}
+
+      {showCityChrome && electricity && !planLevers && (
         <BuildingEnergyPanel
           geometry={electricity}
           profile={ewrbProfile}

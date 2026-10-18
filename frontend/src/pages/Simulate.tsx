@@ -1,15 +1,13 @@
 import { useEffect, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { api } from '@/api/client';
+import type { EwrbLevers, EwrbPlanResult } from '@/api/types';
+import { useLocation, useNavigate } from 'react-router-dom';
+import type { ResumedPlan } from '@/pages/Plan';
 import Timeline from '@/components/map/Timeline';
 import Panel from '@/components/Panel';
 import CityPageBackdrop from '@/components/map/CityPageBackdrop';
 import TorontoCityViewer from '@/components/map/TorontoCityViewer';
-import DispatchPlanPanel from '@/components/panels/DispatchPlanPanel';
-import ScenarioComparison from '@/components/panels/ScenarioComparison';
-import EmissionsAvoided from '@/components/panels/EmissionsAvoided';
-import ComfortConstraints from '@/components/panels/ComfortConstraints';
-import ReportedStockPanel from '@/components/panels/ReportedStockPanel';
-import GridLoadProfile from '@/components/charts/GridLoadProfile';
+import PlanOutcomePanel from '@/components/panels/PlanOutcomePanel';
 import {
   PlanWeatherDayPicker,
   SimulateWeatherEventBar,
@@ -37,6 +35,7 @@ function clockLabel(iso: string) {
 
 export default function Simulate() {
   const location = useLocation();
+  const navigate = useNavigate();
   useEffect(() => {
     window.scrollTo(0, 0);
   }, [location.key]);
@@ -44,6 +43,9 @@ export default function Simulate() {
   const appliedPlanState = location.state as {
     fromPlanApply?: boolean;
     appliedPlanDay?: DailyForecastDay;
+    levers?: EwrbLevers | null;
+    plan?: EwrbPlanResult | null;
+    planSettings?: Omit<ResumedPlan, 'day' | 'levers'>;
   } | null;
   const appliedPlanDay = appliedPlanState?.fromPlanApply
     ? appliedPlanState.appliedPlanDay ?? null
@@ -57,6 +59,51 @@ export default function Simulate() {
   const [draftDay, setDraftDay] = useState<DailyForecastDay | null>(null);
   /** Confirmed day — advances to the city results stage. */
   const [activeDay, setActiveDay] = useState<DailyForecastDay | null>(appliedPlanDay);
+
+  // The levers travel in navigation state, but the outcome is refetched for
+  // whichever day is active here — picking a different event has to move the
+  // numbers, and a refresh must not leave a stale plan on screen.
+  const appliedLevers = appliedPlanState?.levers ?? null;
+  const [planResult, setPlanResult] = useState<EwrbPlanResult | null>(
+    appliedPlanState?.plan ?? null,
+  );
+  const [planStatus, setPlanStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>(
+    appliedPlanState?.plan ? 'ready' : 'idle',
+  );
+
+  const planDay = activeDay
+    ? {
+        day_temp_c: (activeDay.tempMaxC + activeDay.tempMinC) / 2,
+        day_weather_code: activeDay.weatherCode,
+        day_wind_kmh: activeDay.windMaxKmh,
+        day_precip_mm: activeDay.precipMm,
+        day_hourly_temps_c: activeDay.hourlyTempsC,
+      }
+    : null;
+  const planDayKey = JSON.stringify(planDay ?? {});
+  const leverKey = JSON.stringify(appliedLevers ?? {});
+
+  useEffect(() => {
+    if (!appliedLevers) return;
+    let cancelled = false;
+    setPlanStatus('loading');
+    api
+      .ewrbPlan(appliedLevers, 'Toronto', planDay)
+      .then((res) => {
+        if (cancelled) return;
+        setPlanResult(res);
+        setPlanStatus('ready');
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setPlanResult(null);
+        setPlanStatus('error');
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leverKey, planDayKey]);
   const [confirming, setConfirming] = useState(false);
 
   const steps = result.optimized;
@@ -95,6 +142,31 @@ export default function Simulate() {
     }
   }
 
+  /**
+   * Back to the controls with everything intact, including the day as it
+   * stands here — if they swapped the event on this page, that is the day they
+   * mean to keep tweaking.
+   */
+  function handleEditPlan() {
+    navigate('/plan', {
+      state: {
+        resumePlan: {
+          day: activeDay,
+          levers: appliedLevers,
+          weatherEnabled: appliedPlanState?.planSettings?.weatherEnabled ?? true,
+          comfort:
+            appliedPlanState?.planSettings?.comfort ?? {
+              temperature: 22,
+              airQuality: 88,
+              lighting: 96,
+            },
+          flex:
+            appliedPlanState?.planSettings?.flex ?? { ev: 60, hvac: 45, industrial: 25 },
+        } satisfies ResumedPlan,
+      },
+    });
+  }
+
   function handleChangeEvent() {
     setActiveDay(null);
     setDraftDay(null);
@@ -122,6 +194,20 @@ export default function Simulate() {
           />
         ) : (
           <div className="flex flex-col gap-4 p-4">
+            {appliedLevers && (
+              <div>
+                <button
+                  type="button"
+                  onClick={handleEditPlan}
+                  className="inline-flex items-center gap-2 rounded-lg border border-nc-border bg-nc-panel/70 px-3 py-2 text-xs text-nc-text transition hover:border-nc-renew/60 hover:text-nc-renew"
+                >
+                  <span aria-hidden>←</span>
+                  Edit plan
+                  <span className="text-nc-muted">· keeps this day and your settings</span>
+                </button>
+              </div>
+            )}
+
             <SimulateWeatherEventBar
               day={activeDay}
               scenarioKind={scenarioKind}
@@ -172,6 +258,8 @@ export default function Simulate() {
                 variant="simulate"
                 scenarioKind={scenarioKind}
                 effectIntensity={effectIntensity}
+                planLevers={appliedLevers}
+                planDay={planDay}
               />
               <div className="pointer-events-none absolute bottom-3 left-3 z-20 rounded-md border border-nc-border/70 bg-nc-panel/85 px-2.5 py-1.5 text-[11px] text-nc-muted backdrop-blur-sm">
                 {scenarioKind === 'storm' && 'Blackout cascade · building lights failing'}
@@ -194,42 +282,24 @@ export default function Simulate() {
             />
 
             <div className="flex flex-col gap-4">
-              <DispatchPlanPanel
-                actions={result.actions}
-                baseline={result.baseline_metrics}
-                optimized={result.optimized_metrics}
-                gridStatus={result.grid_status}
-                explanation={result.explanation}
-                className="w-full"
-              />
-
-              <Panel
-                title="Grid Load Profile"
-                subtitle={
-                  live ? 'TigerData telemetry baseline vs plan' : 'Baseline vs plan, identical inputs'
-                }
-                className="w-full"
-              >
-                <GridLoadProfile
-                  baseline={result.baseline}
-                  optimized={result.optimized}
-                  height={220}
-                />
-              </Panel>
-
-              <div className="grid w-full gap-4 md:grid-cols-3">
-                <ScenarioComparison
-                  baseline={result.baseline_metrics}
-                  optimized={result.optimized_metrics}
-                />
-                <EmissionsAvoided
-                  baseline={result.baseline_metrics}
-                  optimized={result.optimized_metrics}
-                />
-                <ComfortConstraints metrics={result.optimized_metrics} />
-              </div>
-
-              <ReportedStockPanel className="w-full" />
+              {/* The applied plan's consequences: moved here from the Plan page,
+                  which now owns only the controls. */}
+              {planStatus === 'loading' && (
+                <Panel title="Your plan" subtitle="Running the levers for this day">
+                  <div className="h-24 w-full animate-pulse rounded bg-nc-panel-2" aria-busy />
+                </Panel>
+              )}
+              {planStatus === 'ready' && planResult && (
+                <PlanOutcomePanel plan={planResult} className="w-full" />
+              )}
+              {planStatus === 'error' && (
+                <Panel title="Your plan" subtitle="Could not be evaluated">
+                  <p className="text-[11px] text-nc-muted">
+                    The plan needs the EWRB dataset and the TigerData massing. Check the backend
+                    is running with <code className="rounded bg-nc-panel-2 px-1">USE_DATABASE=true</code>.
+                  </p>
+                </Panel>
+              )}
             </div>
           </div>
         )}

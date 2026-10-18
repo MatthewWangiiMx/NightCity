@@ -6,6 +6,10 @@ import type {
   EwrbCitySummary,
   EwrbDistrictRollup,
   EwrbEuiResponse,
+  EwrbLevers,
+  EwrbPlanDay,
+  EwrbBuildingPlan,
+  EwrbPlanResult,
   EwrbFsaArea,
   EwrbMeta,
   EwrbRecordPage,
@@ -144,6 +148,48 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(buildings),
     }),
+  /** Run the Plan levers over the measured stock; 503 when the DB is off. */
+  ewrbPlan: (
+    levers: Partial<EwrbLevers> = {},
+    city = 'Toronto',
+    day?: Partial<EwrbPlanDay> | null,
+  ) => {
+    const q = new URLSearchParams({ city });
+    Object.entries({ ...levers, ...(day ?? {}) }).forEach(([k, v]) => {
+      if (v != null) q.set(k, String(v));
+    });
+    return request<EwrbPlanResult>(`/ewrb/plan?${q.toString()}`);
+  },
+  /** One building, today against the plan — for the results page's card. */
+  ewrbBuildingPlan: (
+    building: {
+      id: string;
+      footprint_m2: number;
+      name?: string;
+      kind?: string | null;
+      height_m?: number | null;
+      levels?: number | null;
+      lat?: number | null;
+      lon?: number | null;
+    },
+    levers: Partial<EwrbLevers> = {},
+    day?: Partial<EwrbPlanDay> | null,
+  ) => {
+    const q = new URLSearchParams({
+      building_id: building.id,
+      footprint_m2: String(Math.max(1, Math.round(building.footprint_m2))),
+    });
+    if (building.name) q.set('name', building.name);
+    if (building.kind) q.set('kind', building.kind);
+    if (building.height_m != null) q.set('height_m', String(building.height_m));
+    if (building.levels != null) q.set('levels', String(building.levels));
+    if (building.lat != null) q.set('lat', String(building.lat));
+    if (building.lon != null) q.set('lon', String(building.lon));
+    Object.entries({ ...levers, ...(day ?? {}) }).forEach(([k, v]) => {
+      if (v != null) q.set(k, String(v));
+    });
+    return request<EwrbBuildingPlan>(`/ewrb/building-plan?${q.toString()}`);
+  },
   /** District rollup over the stock in TigerData; 503 when the DB is off. */
   ewrbLiveDistrict: (city = 'Toronto') =>
     request<EwrbDistrictRollup>(`/ewrb/district/live?city=${encodeURIComponent(city)}`),

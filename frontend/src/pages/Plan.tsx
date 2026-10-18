@@ -1,17 +1,30 @@
-import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useState, type ReactNode } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import Panel from '@/components/Panel';
-import GridLoadProfile from '@/components/charts/GridLoadProfile';
-import EnergyMixDonut from '@/components/charts/EnergyMixDonut';
+import InfoTip, { TipNote } from '@/components/InfoTip';
 import CityPageBackdrop from '@/components/map/CityPageBackdrop';
-import EfficiencyHeadroomPanel from '@/components/panels/EfficiencyHeadroomPanel';
+import EnergyLeversPanel from '@/components/panels/EnergyLeversPanel';
 import {
   PlanWeatherDayPicker,
   WeatherDayBar,
 } from '@/components/panels/WeatherForecastPanel';
-import { useRun } from '@/hooks/useRun';
-import { ENERGY_MIX } from '@/demo/fixtures';
 import type { DailyForecastDay } from '@/api/openMeteo';
+import type { EwrbLevers, EwrbPlanResult } from '@/api/types';
+
+/**
+ * Everything the Plan page owns, so the results page can hand it straight back.
+ *
+ * The levers travel merged (panel knobs plus the comfort and flexibility
+ * floors); `comfort` and `flex` come along separately because those two panels
+ * cannot be reconstructed from the merged lever set alone.
+ */
+export type ResumedPlan = {
+  day: DailyForecastDay | null;
+  levers: EwrbLevers | null;
+  weatherEnabled: boolean;
+  comfort: { temperature: number; airQuality: number; lighting: number };
+  flex: { ev: number; hvac: number; industrial: number };
+};
 
 function Slider({
   label,
@@ -22,6 +35,7 @@ function Slider({
   max = 100,
   leading,
   trailing,
+  tip,
 }: {
   label: string;
   value: number;
@@ -31,11 +45,16 @@ function Slider({
   max?: number;
   leading?: string;
   trailing?: string;
+  /** Longer explanation behind the question mark. */
+  tip?: ReactNode;
 }) {
   return (
     <label className="block">
       <span className="flex items-baseline justify-between text-xs">
-        <span className="text-nc-muted">{label}</span>
+        <span className="flex items-center gap-1.5 text-nc-muted">
+          {label}
+          {tip && <InfoTip title={label}>{tip}</InfoTip>}
+        </span>
         <span className="tabular-nums text-nc-text">
           {value}
           {suffix}
@@ -74,49 +93,52 @@ function Slider({
  */
 export default function Plan() {
   const navigate = useNavigate();
-  const { result } = useRun();
+  const location = useLocation();
   const forecast = usePlanForecast();
-  const [selectedDay, setSelectedDay] = useState<DailyForecastDay | null>(null);
-  const [weatherEnabled, setWeatherEnabled] = useState(true);
 
-  const [mix, setMix] = useState(
-    () => Object.fromEntries(ENERGY_MIX.map((m) => [m.name, m.share])) as Record<string, number>,
+  // Coming back from the results page: resume the plan that was applied rather
+  // than dropping the user on an empty day picker with every slider at zero.
+  const resume = (location.state as { resumePlan?: ResumedPlan } | null)?.resumePlan ?? null;
+
+  const [selectedDay, setSelectedDay] = useState<DailyForecastDay | null>(resume?.day ?? null);
+  const [leverPlan, setLeverPlan] = useState<EwrbPlanResult | null>(null);
+  const [leverValues, setLeverValues] = useState<EwrbLevers | null>(resume?.levers ?? null);
+  const [weatherEnabled, setWeatherEnabled] = useState(resume?.weatherEnabled ?? true);
+
+  const [comfort, setComfort] = useState(
+    resume?.comfort ?? { temperature: 22, airQuality: 88, lighting: 96 },
   );
-  const [comfort, setComfort] = useState({ temperature: 22, airQuality: 88, lighting: 96 });
-  const [flex, setFlex] = useState({ ev: 60, hvac: 45, industrial: 25 });
+  const [flex, setFlex] = useState(resume?.flex ?? { ev: 60, hvac: 45, industrial: 25 });
 
-  const mixRows = ENERGY_MIX.map((m) => ({ name: m.name, share: mix[m.name] }));
-  const total = mixRows.reduce((sum, m) => sum + m.share, 0);
-  // Battery is storage, not generation, so it is not counted as renewable supply.
-  const renewablePct = total ? Math.round(((mix.Solar + mix.Wind) / total) * 100) : 0;
 
-  const plan = result.optimized_metrics;
-  const baseline = result.baseline_metrics;
-  const lift = renewablePct - plan.renewable_share_pct;
-
-  const projected = {
-    peak: Math.round(
-      plan.peak_demand_mw *
-        (1 - lift * 0.004) *
-        (weatherEnabled ? forecast.demandFactors[selectedDay?.date ?? ''] ?? 1 : 1),
-    ),
-    renewable: renewablePct,
-    emissions: Math.round(
-      plan.emissions_tco2e *
-        (1 - lift * 0.008) *
-        (weatherEnabled ? forecast.demandFactors[selectedDay?.date ?? ''] ?? 1 : 1),
-    ),
-  };
-
-  const rows = [
-    { label: 'Peak load', unit: 'MW', base: baseline.peak_demand_mw, now: projected.peak, lowerIsBetter: true },
-    { label: 'Renewable share', unit: '%', base: baseline.renewable_share_pct, now: projected.renewable, lowerIsBetter: false },
-    { label: 'Emissions', unit: 'tCO₂e', base: baseline.emissions_tco2e, now: projected.emissions, lowerIsBetter: true },
-  ];
-
-  function setMixValue(name: string, value: number) {
-    setMix((prev) => ({ ...prev, [name]: value }));
-  }
+  // Baseline and plan come from the lever panel, which runs them over reported
+  // building energy. The old projection here scaled dispatch by renewable share
+  // with hand-picked coefficients and could not respond to the levers at all.
+  const rows = leverPlan
+    ? [
+        {
+          label: 'Site energy',
+          unit: 'MWh/yr',
+          base: leverPlan.baseline.site_mwh,
+          now: leverPlan.planned.site_mwh,
+          lowerIsBetter: true,
+        },
+        {
+          label: 'Emissions',
+          unit: 'tCO₂e/yr',
+          base: leverPlan.baseline.emissions_tco2e,
+          now: leverPlan.planned.emissions_tco2e,
+          lowerIsBetter: true,
+        },
+        {
+          label: 'Electrified share',
+          unit: '%',
+          base: leverPlan.baseline.electrified_pct ?? 0,
+          now: leverPlan.planned.electrified_pct ?? 0,
+          lowerIsBetter: false,
+        },
+      ]
+    : [];
 
   return (
     <div className="relative min-h-[calc(100vh-4.5rem)]">
@@ -151,40 +173,60 @@ export default function Plan() {
             </Panel>
 
             <div className="grid gap-4 xl:grid-cols-4">
-        <Panel
-          title="Grid Load Profile"
-          subtitle="Baseline vs plan, identical inputs"
-          className="xl:col-span-2"
-        >
-          <GridLoadProfile baseline={result.baseline} optimized={result.optimized} height={250} />
-        </Panel>
-
-        <Panel title="Energy Mix" subtitle="Adjust the supply shares">
-          <div className="space-y-4">
-            {ENERGY_MIX.map((m) => (
-              <Slider
-                key={m.name}
-                label={m.name}
-                value={mix[m.name]}
-                onChange={(v) => setMixValue(m.name, v)}
-              />
-            ))}
-          </div>
-          {total !== 100 && (
-            <p className="text-[11px] text-nc-flex">
-              Shares total {total}% — the simulator normalizes to 100% before dispatch.
-            </p>
-          )}
-        </Panel>
-
-        <Panel title="Energy Mix" subtitle="Resulting share of supply">
-          <EnergyMixDonut mix={mixRows} renewablePct={renewablePct} size={140} />
-        </Panel>
+        {/*
+          Replaces the grid load profile and the synthetic supply-mix sliders.
+          Those moved emissions per kWh around; these change the kWh, and every
+          one is driven by intensities buildings actually reported.
+        */}
+        <EnergyLeversPanel
+          className="xl:col-span-4"
+          initialLevers={resume?.levers}
+          day={
+            weatherEnabled && selectedDay
+              ? {
+                  // Degree-days want a daily mean, not the high.
+                  day_temp_c: (selectedDay.tempMaxC + selectedDay.tempMinC) / 2,
+                  day_weather_code: selectedDay.weatherCode,
+                  day_wind_kmh: selectedDay.windMaxKmh,
+                  day_precip_mm: selectedDay.precipMm,
+                  day_hourly_temps_c: selectedDay.hourlyTempsC,
+                }
+              : null
+          }
+          extra={{
+            // Target temperature is the single setpoint control. Heating energy
+            // tracks degree-days, so holding the district cooler than the 22 °C
+            // reference removes load; we do not model a penalty for going warmer.
+            setpoint_widen_c: Math.max(0, 22 - comfort.temperature),
+            air_quality_floor_pct: comfort.airQuality,
+            lighting_floor_pct: comfort.lighting,
+            flex_ev_pct: flex.ev,
+            flex_hvac_pct: flex.hvac,
+            flex_industrial_pct: flex.industrial,
+          }}
+          onPlanChange={(values, result) => {
+            setLeverValues(values);
+            setLeverPlan(result);
+          }}
+        />
 
         <Panel title="Comfort Constraints" subtitle="Bounds the optimizer may not cross">
           <div className="space-y-4">
             <Slider
               label="Target temperature"
+              tip={
+                <>
+                  The indoor temperature the optimizer must hold while it shifts load
+                  around.
+                  <br />
+                  Heating energy tracks heating degree-days, so every degree below the
+                  22 °C reference removes roughly 6% of the district's heating load.
+                  <TipNote>
+                    Lowering it saves real energy and costs occupant comfort. Going above
+                    22 °C is not modelled as a penalty here.
+                  </TipNote>
+                                  </>
+              }
               value={comfort.temperature}
               min={18}
               max={26}
@@ -195,6 +237,15 @@ export default function Plan() {
             />
             <Slider
               label="Air quality floor"
+              tip={
+                <>
+                  Minimum ventilation performance the plan may not drop below.
+                  <br />
+                  Ventilation is a large and very shiftable electrical load, which makes
+                  it tempting to cut. This sets the point past which cutting it stops
+                  being a saving and starts being a transfer onto the people inside.
+                                  </>
+              }
               value={comfort.airQuality}
               leading="◌"
               trailing="◉"
@@ -202,6 +253,11 @@ export default function Plan() {
             />
             <Slider
               label="Lighting floor"
+              tip={
+                <>
+                  Minimum lighting level the plan may not dim below during a peak event.
+                                  </>
+              }
               value={comfort.lighting}
               leading="◑"
               trailing="☀"
@@ -209,8 +265,9 @@ export default function Plan() {
             />
           </div>
           <p className="text-[11px] text-nc-muted">
-            Comfort is a hard constraint: a plan that crosses these bounds is rejected, not traded
-            off against cost or emissions.
+            Comfort is a hard constraint: a plan may not cross these bounds. The floors are
+            headroom — an 88% air-quality floor lets the optimizer shed 12% of ventilation at
+            the peak and no more.
           </p>
         </Panel>
 
@@ -218,22 +275,54 @@ export default function Plan() {
           <div className="space-y-4">
             <Slider
               label="Flexible EV charging"
+              tip={
+                <>
+                  Share of EV charging the optimizer may move to another hour.
+                  <br />
+                  Most vehicles sit plugged in far longer than they need to charge, so
+                  this is usually the cheapest flexibility in a district.
+                  <TipNote>
+                    Shifts energy in time — it lowers peak demand, not total consumption.
+                  </TipNote>
+                </>
+              }
               value={flex.ev}
               onChange={(v) => setFlex((f) => ({ ...f, ev: v }))}
             />
             <Slider
               label="HVAC pre-cooling"
+              tip={
+                <>
+                  Runs cooling early and stores the coolness in the building's own
+                  thermal mass, so it can coast through the peak with equipment off.
+                  <TipNote>
+                    Costs slightly more total energy than doing nothing, and buys a lower
+                    peak in exchange.
+                  </TipNote>
+                </>
+              }
               value={flex.hvac}
               onChange={(v) => setFlex((f) => ({ ...f, hvac: v }))}
             />
             <Slider
               label="Deferrable industrial load"
+              tip={
+                <>
+                  Share of industrial process load that can be postponed to a cheaper or
+                  cleaner hour without disrupting production.
+                  <TipNote>
+                    Shifts energy in time rather than reducing it. Downtown has almost no
+                    deferrable process load, so expect this one to stay near zero here.
+                  </TipNote>
+                </>
+              }
               value={flex.industrial}
               onChange={(v) => setFlex((f) => ({ ...f, industrial: v }))}
             />
           </div>
           <p className="text-[11px] text-nc-muted">
-            Placeholders until the optimizer accepts flexibility parameters.
+            These move load between hours rather than removing it, so they lower peak demand
+            without changing annual energy. Only the shed share is avoided outright.
           </p>
         </Panel>
 
@@ -283,7 +372,15 @@ export default function Plan() {
             type="button"
             onClick={() =>
               navigate('/plan/simulate', {
-                state: { fromPlanApply: true, appliedPlanDay: selectedDay },
+                state: {
+                  fromPlanApply: true,
+                  appliedPlanDay: selectedDay,
+                  // The results page reruns these rather than re-deriving them.
+                  levers: leverValues,
+                  plan: leverPlan,
+                  // Handed straight back by the results page's Edit plan button.
+                  planSettings: { weatherEnabled, comfort, flex },
+                },
               })
             }
             className="rounded-xl bg-nc-renew px-4 py-3 text-sm font-medium text-nc-bg shadow-lg shadow-nc-renew/20 transition hover:brightness-110"
@@ -292,8 +389,6 @@ export default function Plan() {
           </button>
         </Panel>
 
-        {/* Unlike the sliders above, this target comes from reported practice. */}
-        <EfficiencyHeadroomPanel className="xl:col-span-2" />
             </div>
           </div>
         )}
@@ -323,6 +418,7 @@ function usePlanForecast() {
             precip_mm: number;
             wind_max_kmh: number;
             weather_demand_factor: number;
+            hourly_temps_c?: number[];
           }>;
         }>;
       })
@@ -337,6 +433,7 @@ function usePlanForecast() {
             precipMm: day.precip_mm,
             windMaxKmh: day.wind_max_kmh,
             weatherDemandFactor: day.weather_demand_factor,
+            hourlyTempsC: day.hourly_temps_c?.length === 24 ? day.hourly_temps_c : undefined,
           })),
         );
         setStatus('ready');

@@ -11,6 +11,14 @@ export type DailyForecastDay = {
   tempMinC: number;
   precipMm: number;
   windMaxKmh: number;
+  /**
+   * 24 hourly temperatures for this date, index = hour of day.
+   *
+   * The plan's load curve needs these: heating demand follows temperature hour
+   * by hour, and a daily mean cannot say *when* the cold falls — which is the
+   * difference between a 6pm peak and a 5am one.
+   */
+  hourlyTempsC?: number[];
 };
 
 export type DailyForecast = {
@@ -28,6 +36,10 @@ type OpenMeteoDailyResponse = {
     temperature_2m_min: number[];
     precipitation_sum: number[];
     wind_speed_10m_max: number[];
+  };
+  hourly?: {
+    time: string[];
+    temperature_2m: number[];
   };
 };
 
@@ -95,6 +107,7 @@ export async function fetchTorontoDailyForecast(forecastDays = 16): Promise<Dail
       'precipitation_sum',
       'wind_speed_10m_max',
     ].join(','),
+    hourly: 'temperature_2m',
     timezone: 'America/Toronto',
     forecast_days: String(Math.min(16, Math.max(1, forecastDays))),
   });
@@ -105,14 +118,39 @@ export async function fetchTorontoDailyForecast(forecastDays = 16): Promise<Dail
   const daily = data.daily;
   if (!daily?.time?.length) throw new Error('Open-Meteo returned no daily forecast');
 
-  const days: DailyForecastDay[] = daily.time.map((date, i) => ({
-    date,
-    weatherCode: daily.weather_code[i] ?? 0,
-    tempMaxC: daily.temperature_2m_max[i] ?? 0,
-    tempMinC: daily.temperature_2m_min[i] ?? 0,
-    precipMm: daily.precipitation_sum[i] ?? 0,
-    windMaxKmh: daily.wind_speed_10m_max[i] ?? 0,
-  }));
+  // Bucket the hourly temperatures by date so each day carries its own
+  // profile. Open-Meteo returns local ISO stamps ("2026-10-18T05:00"), so the
+  // date and the hour both read straight off the string.
+  const tempsByDate = new Map<string, number[]>();
+  const hourly = data.hourly;
+  if (hourly?.time?.length) {
+    hourly.time.forEach((stamp, i) => {
+      const [date, clock] = stamp.split('T');
+      const hour = Number(clock?.slice(0, 2));
+      const value = hourly.temperature_2m[i];
+      if (!date || Number.isNaN(hour) || value == null) return;
+      const slots = tempsByDate.get(date) ?? new Array<number>(24).fill(Number.NaN);
+      slots[hour] = value;
+      tempsByDate.set(date, slots);
+    });
+  }
+
+  const days: DailyForecastDay[] = daily.time.map((date, i) => {
+    const slots = tempsByDate.get(date);
+    // A short day (the forecast can start mid-afternoon) is dropped rather
+    // than padded: a partial profile would bias the heating shape towards
+    // whichever hours happened to arrive.
+    const complete = slots && slots.every((v) => !Number.isNaN(v)) ? slots : undefined;
+    return {
+      date,
+      weatherCode: daily.weather_code[i] ?? 0,
+      tempMaxC: daily.temperature_2m_max[i] ?? 0,
+      tempMinC: daily.temperature_2m_min[i] ?? 0,
+      precipMm: daily.precipitation_sum[i] ?? 0,
+      windMaxKmh: daily.wind_speed_10m_max[i] ?? 0,
+      hourlyTempsC: complete,
+    };
+  });
 
   return {
     timezone: data.timezone ?? 'America/Toronto',

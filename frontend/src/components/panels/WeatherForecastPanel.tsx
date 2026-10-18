@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  fetchTorontoDailyForecast,
+  fetchDailyForecast,
   isNotableWeatherDay,
   scenarioKindFromForecastDay,
   weatherCodeLabel,
   weatherEventTitle,
   type DailyForecastDay,
+  type ForecastSource,
 } from '@/api/openMeteo';
 import type { ScenarioKind } from '@/api/types';
 
@@ -37,14 +38,16 @@ export function useTorontoForecast() {
   const [days, setDays] = useState<DailyForecastDay[]>([]);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [error, setError] = useState('');
+  const [source, setSource] = useState<ForecastSource | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setStatus('loading');
-    fetchTorontoDailyForecast(16)
+    fetchDailyForecast(16)
       .then((forecast) => {
         if (cancelled) return;
         setDays(forecast.days);
+        setSource(forecast.source);
         setStatus('ready');
       })
       .catch((err: unknown) => {
@@ -57,10 +60,39 @@ export function useTorontoForecast() {
     };
   }, []);
 
-  return { days, status, error };
+  return { days, status, error, source };
 }
 
 /** Full-page calendar: every day present in the Open-Meteo forecast. */
+/**
+ * Says where the forecast on screen came from.
+ *
+ * Only `direct` is a warning: it means the backend was unreachable and the
+ * browser called Open-Meteo itself, so this forecast never passed through
+ * TigerData and nothing else in the app shares its cache.
+ */
+const SOURCE_LABEL: Record<ForecastSource, { text: string; tone: string }> = {
+  'tigerdata-cache': { text: 'TigerData · cached today', tone: 'text-nc-renew' },
+  'tigerdata-stale': {
+    text: 'TigerData · stale, provider unreachable',
+    tone: 'text-nc-flex',
+  },
+  'open-meteo': { text: 'Open-Meteo · refreshed, stored', tone: 'text-nc-renew' },
+  direct: { text: 'Open-Meteo direct · backend offline, not cached', tone: 'text-nc-alert' },
+};
+
+function ForecastSourceChip({ source }: { source: ForecastSource }) {
+  const { text, tone } = SOURCE_LABEL[source] ?? SOURCE_LABEL['open-meteo'];
+  return (
+    <p className={`mt-1 text-[11px] ${tone}`}>
+      <span aria-hidden className="mr-1.5">
+        ●
+      </span>
+      {text}
+    </p>
+  );
+}
+
 export function PlanWeatherDayPicker({
   days,
   status,
@@ -73,6 +105,7 @@ export function PlanWeatherDayPicker({
   confirmLabel,
   confirmLoading = false,
   onConfirm,
+  source = null,
 }: {
   days: DailyForecastDay[];
   status: 'loading' | 'ready' | 'error';
@@ -88,6 +121,8 @@ export function PlanWeatherDayPicker({
   confirmLabel?: string;
   confirmLoading?: boolean;
   onConfirm?: () => void;
+  /** Where the forecast came from, shown so a degraded path is never silent. */
+  source?: ForecastSource | null;
 }) {
   const needsConfirm = Boolean(confirmLabel);
   const available = useMemo(() => new Set(days.map((d) => d.date)), [days]);
@@ -141,6 +176,7 @@ export function PlanWeatherDayPicker({
         <div className="mb-6 text-center">
           <h1 className="text-lg font-semibold tracking-tight text-nc-text">{title}</h1>
           <p className="mt-1 text-sm text-nc-muted">{subtitle}</p>
+          {source && <ForecastSourceChip source={source} />}
         </div>
 
         {status === 'loading' && (

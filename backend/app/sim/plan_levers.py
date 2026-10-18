@@ -258,16 +258,31 @@ def weather_day(
     avg_site = avg_elec + avg_gas
     day_site = day_elec + day_gas
 
+    # Name the effect that actually moved the number, largest first. Ordering
+    # matters more than it looks: a 14 C overcast day runs heating at about a
+    # third of normal and lands ~38% below an average day, while the overcast
+    # effect is a 5% uplift on the lighting share alone. Testing cloud before
+    # mild weather credited the rounding error and ignored the cause.
+    mild = 0.25 < heat_ratio < 0.75 and cool_ratio < 1.0
+    overcast_note = " Overcast adds a little lighting on top." if light_uplift else ""
+
     if _is_snow(weather_code):
         driver = "Snow — cold is what drives this, not the snow itself"
     elif hdd > 12:
         driver = "Cold day: heating dominates"
     elif cdd > 3:
         driver = "Warm day: cooling raises electricity"
+    elif mild:
+        driver = (
+            f"Mild day: heating runs at {heat_ratio:.0%} of normal, "
+            f"which is most of the difference.{overcast_note}"
+        )
+    elif heat_ratio <= 0.25 and cool_ratio < 1.0:
+        driver = f"Shoulder day: almost no heating or cooling.{overcast_note}"
     elif light_uplift:
         driver = "Overcast: a little more lighting, little else"
     else:
-        driver = "Mild day: close to baseline"
+        driver = "Close to an average day"
 
     return {
         "available": True,

@@ -8,7 +8,11 @@ import {
   PlanWeatherDayPicker,
   WeatherDayBar,
 } from '@/components/panels/WeatherForecastPanel';
-import type { DailyForecastDay } from '@/api/openMeteo';
+import {
+  fetchDailyForecast,
+  type DailyForecastDay,
+  type ForecastSource,
+} from '@/api/openMeteo';
 import type { EwrbLevers, EwrbPlanResult } from '@/api/types';
 
 /**
@@ -150,6 +154,7 @@ export default function Plan() {
             days={forecast.days}
             status={forecast.status}
             error={forecast.error}
+            source={forecast.source}
             onPick={(day) => setSelectedDay(day)}
           />
         ) : (
@@ -397,45 +402,27 @@ export default function Plan() {
   );
 }
 
-type PlanForecastDay = DailyForecastDay & { weatherDemandFactor: number };
-
+/**
+ * The Plan page's forecast.
+ *
+ * Shares `fetchDailyForecast` with the results page so both read the same
+ * cached data through the same endpoint — previously this page went through
+ * the backend and the results page called Open-Meteo straight from the
+ * browser, which meant the two could legitimately disagree.
+ */
 function usePlanForecast() {
-  const [days, setDays] = useState<PlanForecastDay[]>([]);
+  const [days, setDays] = useState<DailyForecastDay[]>([]);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [error, setError] = useState('');
+  const [source, setSource] = useState<ForecastSource | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/weather/forecast?forecast_days=16')
-      .then((response) => {
-        if (!response.ok) throw new Error(`Weather forecast ${response.status}`);
-        return response.json() as Promise<{
-          days: Array<{
-            date: string;
-            weather_code: number;
-            temp_max_c: number;
-            temp_min_c: number;
-            precip_mm: number;
-            wind_max_kmh: number;
-            weather_demand_factor: number;
-            hourly_temps_c?: number[];
-          }>;
-        }>;
-      })
-      .then((payload) => {
+    fetchDailyForecast(16)
+      .then((forecast) => {
         if (cancelled) return;
-        setDays(
-          payload.days.map((day) => ({
-            date: day.date,
-            weatherCode: day.weather_code,
-            tempMaxC: day.temp_max_c,
-            tempMinC: day.temp_min_c,
-            precipMm: day.precip_mm,
-            windMaxKmh: day.wind_max_kmh,
-            weatherDemandFactor: day.weather_demand_factor,
-            hourlyTempsC: day.hourly_temps_c?.length === 24 ? day.hourly_temps_c : undefined,
-          })),
-        );
+        setDays(forecast.days);
+        setSource(forecast.source);
         setStatus('ready');
       })
       .catch((reason: unknown) => {
@@ -448,6 +435,8 @@ function usePlanForecast() {
     };
   }, []);
 
-  const demandFactors = Object.fromEntries(days.map((day) => [day.date, day.weatherDemandFactor]));
-  return { days, demandFactors, status, error };
+  const demandFactors = Object.fromEntries(
+    days.map((day) => [day.date, day.weatherDemandFactor ?? 1]),
+  );
+  return { days, demandFactors, status, error, source };
 }

@@ -19,12 +19,29 @@ export type DailyForecastDay = {
    * difference between a 6pm peak and a 5am one.
    */
   hourlyTempsC?: number[];
+  /** Backend-derived demand multiplier for the day; absent on the direct path. */
+  weatherDemandFactor?: number;
 };
+
+/**
+ * Where a forecast came from.
+ *
+ * `tigerdata-cache` and `tigerdata-stale` are the backend serving what it
+ * stored; `open-meteo` is the backend having just refreshed it. `direct` means
+ * the backend could not be reached and the browser called the provider itself,
+ * which skips the database entirely — worth surfacing rather than hiding,
+ * because it is the one case where two pages could disagree.
+ */
+export type ForecastSource =
+  | 'tigerdata-cache'
+  | 'tigerdata-stale'
+  | 'open-meteo'
+  | 'direct';
 
 export type DailyForecast = {
   timezone: string;
   days: DailyForecastDay[];
-  source: 'open-meteo';
+  source: ForecastSource;
 };
 
 type OpenMeteoDailyResponse = {
@@ -159,3 +176,61 @@ export async function fetchTorontoDailyForecast(forecastDays = 16): Promise<Dail
   };
 }
 
+
+/** Shape of `GET /api/weather/forecast`. */
+type BackendForecastResponse = {
+  timezone: string;
+  source: string;
+  days: Array<{
+    date: string;
+    weather_code: number;
+    temp_max_c: number;
+    temp_min_c: number;
+    precip_mm: number;
+    wind_max_kmh: number;
+    weather_demand_factor: number;
+    hourly_temps_c?: number[];
+  }>;
+};
+
+/**
+ * The forecast every page should use.
+ *
+ * Goes through our own backend, which calls Open-Meteo at most once a day per
+ * location and serves the rest from TigerData. That gives one answer to "where
+ * does the weather come from", one cache, and one less external dependency to
+ * fail during a demo.
+ *
+ * If the backend is unreachable it falls back to calling Open-Meteo straight
+ * from the browser, and says so in `source` — a degraded path is fine, a
+ * silent one is not.
+ */
+export async function fetchDailyForecast(forecastDays = 16): Promise<DailyForecast> {
+  const days = Math.min(16, Math.max(1, forecastDays));
+  try {
+    const res = await fetch(`/api/weather/forecast?forecast_days=${days}`);
+    if (!res.ok) throw new Error(`Weather forecast ${res.status}`);
+    const data = (await res.json()) as BackendForecastResponse;
+    if (!data?.days?.length) throw new Error('Weather forecast returned no days');
+
+    return {
+      timezone: data.timezone ?? 'America/Toronto',
+      source: (data.source as ForecastSource) ?? 'open-meteo',
+      days: data.days.map((day) => ({
+        date: day.date,
+        weatherCode: day.weather_code,
+        tempMaxC: day.temp_max_c,
+        tempMinC: day.temp_min_c,
+        precipMm: day.precip_mm,
+        windMaxKmh: day.wind_max_kmh,
+        weatherDemandFactor: day.weather_demand_factor,
+        // Anything short of a full day is dropped: a partial profile would
+        // bias the heating shape towards whichever hours happened to arrive.
+        hourlyTempsC: day.hourly_temps_c?.length === 24 ? day.hourly_temps_c : undefined,
+      })),
+    };
+  } catch {
+    const direct = await fetchTorontoDailyForecast(days);
+    return { ...direct, source: 'direct' };
+  }
+}

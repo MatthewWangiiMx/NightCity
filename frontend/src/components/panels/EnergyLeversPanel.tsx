@@ -339,11 +339,32 @@ export default function EnergyLeversPanel({
 
               {plan.weather?.available && (
                 <p className="text-[11px] leading-snug text-nc-muted">
-                  On the selected day ({num(plan.weather.temp_c, 1)} °C) this district would use{' '}
+                  With your plan, on the selected day ({num(plan.weather.temp_c, 1)} °C) this
+                  district would use{' '}
                   <span className="tabular-nums text-nc-text">
                     {num(plan.weather.day_site_mwh)} MWh
-                  </span>
-                  , {(plan.weather.driver ?? '').toLowerCase()}.
+                  </span>{' '}
+                  of site energy
+                  {/*
+                    A bare megawatt-hour figure means nothing on its own. The
+                    comparison against a typical day is what makes it readable,
+                    and the backend already returns it.
+                  */}
+                  {plan.weather.vs_average_pct != null && (
+                    <>
+                      ,{' '}
+                      <span
+                        className={`tabular-nums ${
+                          plan.weather.vs_average_pct > 0 ? 'text-nc-flex' : 'text-nc-renew'
+                        }`}
+                      >
+                        {Math.abs(plan.weather.vs_average_pct).toFixed(0)}%{' '}
+                        {plan.weather.vs_average_pct > 0 ? 'above' : 'below'}
+                      </span>{' '}
+                      an average day
+                    </>
+                  )}
+                  . {plan.weather.driver}
                 </p>
               )}
 

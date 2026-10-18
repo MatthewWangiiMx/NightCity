@@ -183,6 +183,7 @@ export default function Simulate() {
             days={forecast.days}
             status={forecast.status}
             error={forecast.error}
+            source={forecast.source}
             selected={draftDay}
             onPick={setDraftDay}
             notableOnly

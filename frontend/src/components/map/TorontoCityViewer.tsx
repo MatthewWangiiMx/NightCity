@@ -33,6 +33,7 @@ import {
   Vector3,
   WebGLRenderer,
 } from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import {
@@ -47,6 +48,7 @@ import {
 } from '@/components/map/torontoLandmarks';
 import BuildingEnergyPanel from '@/components/panels/BuildingEnergyPanel';
 import { useEwrbProfile } from '@/hooks/useEwrb';
+import type { ScenarioKind } from '@/api/types';
 
 const MASSING_CACHE_URL = '/data/toronto-massing.json';
 const MASSING_API_URL = '/api/buildings/massing';
@@ -71,6 +73,9 @@ const PREVIEW_LOOK = new Vector3(40, 90, -80);
 const BACKDROP_POS = new Vector3(620, 280, 720);
 const EXPLORE_POS = new Vector3(80, 140, 520);
 const EXPLORE_LOOK = new Vector3(0, 180, 0);
+/** Elevated 2.5D framing for Simulate — orbit around downtown, never enter the streets. */
+const ORBIT_TARGET = new Vector3(40, 50, -60);
+const ORBIT_POS = new Vector3(560, 340, 620);
 const ZOOM_MS = 1600;
 const SEARCH_FLY_MS = 1400;
 
@@ -516,7 +521,7 @@ function buildCityMesh(
   matches: MatchedLandmark[],
   dataSource: BuildingPick['data_source'] = 'massing-cache',
   opts?: { showLabels?: boolean },
-): { group: Group; signs: Sprite[]; hitTargets: Group } {
+): { group: Group; signs: Sprite[]; hitTargets: Group; litWindows: InstancedMesh | null } {
   const showLabels = opts?.showLabels !== false;
   const group = new Group();
   const signs: Sprite[] = [];
@@ -650,10 +655,12 @@ function buildCityMesh(
     else dimMesh?.setMatrixAt(dimI++, mat);
   });
   if (litMesh) {
+    litMesh.name = 'litWindows';
     litMesh.instanceMatrix.needsUpdate = true;
     group.add(litMesh);
   }
   if (dimMesh) {
+    dimMesh.name = 'dimWindows';
     dimMesh.instanceMatrix.needsUpdate = true;
     group.add(dimMesh);
   }
@@ -739,7 +746,67 @@ function buildCityMesh(
   ground.position.y = -0.05;
   group.add(ground);
 
-  return { group, signs, hitTargets };
+  return { group, signs, hitTargets, litWindows: litMesh };
+}
+
+/** Dim / recolor lit windows for a weather disruption on the 3D massing. */
+function applyScenarioWindowLights(
+  lit: InstancedMesh | null,
+  kind: ScenarioKind | undefined,
+  intensity: number,
+) {
+  if (!lit) return;
+  const mat = lit.material as MeshBasicMaterial;
+  const t = Math.min(1, Math.max(0, intensity));
+
+  if (!kind || t <= 0.02) {
+    mat.color.set('#c8efff');
+    mat.transparent = false;
+    mat.opacity = 1;
+    lit.visible = true;
+    mat.needsUpdate = true;
+    return;
+  }
+
+  switch (kind) {
+    case 'storm':
+      // Cascading blackout — most towers go dark.
+      mat.color.set('#6a8a9a');
+      mat.transparent = true;
+      mat.opacity = Math.max(0.04, 1 - t * 0.94);
+      lit.visible = true;
+      break;
+    case 'heat_wave':
+      mat.color.set('#ffd4a8');
+      mat.transparent = false;
+      mat.opacity = 1;
+      lit.visible = true;
+      break;
+    case 'solar_drop':
+      mat.color.set('#9eb8c8');
+      mat.transparent = true;
+      mat.opacity = 0.55 + (1 - t) * 0.45;
+      lit.visible = true;
+      break;
+    case 'battery_outage':
+      mat.color.set('#a8c4d4');
+      mat.transparent = true;
+      mat.opacity = Math.max(0.2, 1 - t * 0.55);
+      lit.visible = true;
+      break;
+    case 'ev_surge':
+      mat.color.set('#ffe08a');
+      mat.transparent = false;
+      mat.opacity = 1;
+      lit.visible = true;
+      break;
+    default:
+      mat.color.set('#c8efff');
+      mat.transparent = false;
+      mat.opacity = 1;
+      lit.visible = true;
+  }
+  mat.needsUpdate = true;
 }
 
 function buildCnTower(x = 0, z = 0): Group {
@@ -975,13 +1042,32 @@ function BuildingSearch({
 export default function TorontoCityViewer({
   mode = 'explore',
   onZoomComplete,
+  scenarioKind,
+  effectIntensity = 0,
+  variant = 'default',
+  className = '',
 }: {
   mode?: CityViewMode;
   onZoomComplete?: () => void;
+  /** Weather disruption driving window lights / atmosphere (Simulate). */
+  scenarioKind?: ScenarioKind;
+  effectIntensity?: number;
+  /**
+   * `simulate` — embedded 2.5D orbit of the massing (drag to rotate, no fly-through).
+   * Hides Explore home chrome; city fills the parent panel.
+   */
+  variant?: 'default' | 'simulate';
+  className?: string;
 }) {
   const mountRef = useRef<HTMLDivElement>(null);
   const modeRef = useRef<CityViewMode>(mode);
   const onZoomCompleteRef = useRef(onZoomComplete);
+  const litWindowsRef = useRef<InstancedMesh | null>(null);
+  const variantRef = useRef(variant);
+  const scenarioRef = useRef<{ kind?: ScenarioKind; intensity: number }>({
+    kind: scenarioKind,
+    intensity: effectIntensity,
+  });
   const [locked, setLocked] = useState(false);
   const [status, setStatus] = useState('Loading Toronto 3D Massing…');
   const [error, setError] = useState<string | null>(null);
@@ -1011,6 +1097,15 @@ export default function TorontoCityViewer({
   useEffect(() => {
     onZoomCompleteRef.current = onZoomComplete;
   }, [onZoomComplete]);
+
+  useEffect(() => {
+    variantRef.current = variant;
+  }, [variant]);
+
+  useEffect(() => {
+    scenarioRef.current = { kind: scenarioKind, intensity: effectIntensity };
+    applyScenarioWindowLights(litWindowsRef.current, scenarioKind, effectIntensity);
+  }, [scenarioKind, effectIntensity]);
 
   useEffect(() => {
     selectRef.current = (pick) => {
@@ -1063,11 +1158,13 @@ export default function TorontoCityViewer({
     let disposed = false;
     let frame = 0;
     let controls: PointerLockControls | null = null;
+    let orbit: OrbitControls | null = null;
     let renderer: WebGLRenderer | null = null;
     let city: Group | null = null;
     let hitTargets: Group | null = null;
     let signs: Sprite[] = [];
     let highlight: Mesh | null = null;
+    const simulateOrbit = variantRef.current === 'simulate';
 
     let zoomActive = false;
     let zoomStart = 0;
@@ -1084,13 +1181,20 @@ export default function TorontoCityViewer({
     } | null = null;
 
     const scene = new Scene();
-    scene.background = new Color('#02060d');
-    scene.fog = new Fog('#02060d', 500, 2600);
+    const baseBg = new Color('#02060d');
+    scene.background = baseBg.clone();
+    // Tighter fog so the dense downtown reads as a 2.5D city picture.
+    scene.fog = new Fog('#02060d', simulateOrbit ? 380 : 500, simulateOrbit ? 2200 : 2600);
 
-    const camera = new PerspectiveCamera(68, 1, 0.8, 5000);
-    // Start in cinematic preview / backdrop framing (farther / higher).
-    camera.position.copy(BACKDROP_POS);
-    camera.lookAt(PREVIEW_LOOK);
+    const camera = new PerspectiveCamera(simulateOrbit ? 38 : 68, 1, 0.8, 5000);
+    if (simulateOrbit) {
+      camera.position.copy(ORBIT_POS);
+      camera.lookAt(ORBIT_TARGET);
+    } else {
+      // Start in cinematic preview / backdrop framing (farther / higher).
+      camera.position.copy(BACKDROP_POS);
+      camera.lookAt(PREVIEW_LOOK);
+    }
 
     renderer = new WebGLRenderer({
       antialias: true,
@@ -1101,17 +1205,41 @@ export default function TorontoCityViewer({
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
     mount.appendChild(renderer.domElement);
 
-    scene.add(new AmbientLight(0x6b7c8f, 0.22));
-    scene.add(new HemisphereLight(0x1e293b, 0x020617, 0.4));
-    const key = new DirectionalLight(0x94a3b8, 0.28);
+    scene.add(new AmbientLight(0x6b7c8f, simulateOrbit ? 0.32 : 0.22));
+    scene.add(new HemisphereLight(0x1e293b, 0x020617, simulateOrbit ? 0.55 : 0.4));
+    const key = new DirectionalLight(0x94a3b8, simulateOrbit ? 0.45 : 0.28);
     key.position.set(-180, 320, 120);
     scene.add(key);
+    if (simulateOrbit) {
+      const fill = new DirectionalLight(0x67e8f9, 0.18);
+      fill.position.set(220, 180, -160);
+      scene.add(fill);
+    }
 
-    controls = new PointerLockControls(camera, renderer.domElement);
     const onLock = () => setLocked(true);
     const onUnlock = () => setLocked(false);
-    controls.addEventListener('lock', onLock);
-    controls.addEventListener('unlock', onUnlock);
+    if (simulateOrbit) {
+      orbit = new OrbitControls(camera, renderer.domElement);
+      orbit.target.copy(ORBIT_TARGET);
+      orbit.enableDamping = true;
+      orbit.dampingFactor = 0.07;
+      orbit.enablePan = false;
+      orbit.enableZoom = true;
+      orbit.rotateSpeed = 0.48;
+      orbit.zoomSpeed = 0.75;
+      // Stay above the skyline — rotate around, never dive into the streets.
+      orbit.minDistance = 320;
+      orbit.maxDistance = 980;
+      orbit.minPolarAngle = Math.PI * 0.32;
+      orbit.maxPolarAngle = Math.PI * 0.46;
+      orbit.autoRotate = true;
+      orbit.autoRotateSpeed = 0.35;
+      orbit.update();
+    } else {
+      controls = new PointerLockControls(camera, renderer.domElement);
+      controls.addEventListener('lock', onLock);
+      controls.addEventListener('unlock', onUnlock);
+    }
 
     const velocity = new Vector3();
     const direction = new Vector3();
@@ -1188,9 +1316,15 @@ export default function TorontoCityViewer({
     };
 
     const onClick = () => {
-      if (!ready || !controls) return;
-      if (modeRef.current !== 'explore') return;
+      if (!ready) return;
       if (typingInField()) return;
+      // Simulate orbit view: picture only — no fly lock / street entry.
+      if (simulateOrbit) {
+        if (orbit) orbit.autoRotate = false;
+        return;
+      }
+      if (!controls) return;
+      if (modeRef.current !== 'explore') return;
       if (!controls.isLocked) {
         controls.lock();
         return;
@@ -1270,7 +1404,8 @@ export default function TorontoCityViewer({
     renderer.domElement.addEventListener('click', onClick);
 
     const tick = () => {
-      if (disposed || !renderer || !controls) return;
+      if (disposed || !renderer) return;
+      if (!simulateOrbit && !controls) return;
       frame = requestAnimationFrame(tick);
 
       const now = performance.now();
@@ -1278,81 +1413,117 @@ export default function TorontoCityViewer({
       prevTime = now;
       const viewMode = modeRef.current;
 
-      if (viewMode === 'zoom' && lastMode !== 'zoom') beginZoom();
-      lastMode = viewMode;
+      if (!simulateOrbit) {
+        if (viewMode === 'zoom' && lastMode !== 'zoom') beginZoom();
+        lastMode = viewMode;
+      }
 
       if (gridRef.current) {
-        const inCity = viewMode === 'explore' || viewMode === 'zoom';
+        const inCity =
+          simulateOrbit || viewMode === 'explore' || viewMode === 'zoom';
         gridRef.current.visible = inCity && gridVisibleRef.current;
       }
 
-      if (viewMode !== 'explore' && controls.isLocked) controls.unlock();
-
-      if (searchFly && viewMode === 'explore') {
-        const u = Math.min(1, (now - searchFly.start) / SEARCH_FLY_MS);
-        const e = easeInOutCubic(u);
-        camera.position.lerpVectors(searchFly.fromPos, searchFly.toPos, e);
-        const look = new Vector3().lerpVectors(searchFly.fromLook, searchFly.toLook, e);
-        camera.lookAt(look);
-        if (u >= 1) searchFly = null;
-      } else if (viewMode === 'backdrop' && ready) {
-        camera.position.copy(BACKDROP_POS);
-        camera.lookAt(PREVIEW_LOOK);
-      } else if (viewMode === 'preview' && ready && !zoomActive) {
-        const t = now * 0.00012;
-        const radius = 780;
-        camera.position.set(
-          Math.cos(t) * radius,
-          250 + Math.sin(t * 0.65) * 40,
-          Math.sin(t) * radius * 0.85 + 180,
-        );
-        camera.lookAt(PREVIEW_LOOK);
-      } else if (zoomActive) {
-        const u = Math.min(1, (now - zoomStart) / ZOOM_MS);
-        const e = easeInOutCubic(u);
-        camera.position.lerpVectors(zoomFromPos, EXPLORE_POS, e);
-        const look = new Vector3().lerpVectors(zoomFromLook, EXPLORE_LOOK, e);
-        camera.lookAt(look);
-        // Subtle FOV punch for “dive in” feel
-        camera.fov = 68 - e * 8;
-        camera.updateProjectionMatrix();
-        if (u >= 1) {
-          zoomActive = false;
-          camera.fov = 68;
-          camera.updateProjectionMatrix();
-          camera.position.copy(EXPLORE_POS);
-          camera.lookAt(EXPLORE_LOOK);
-          onZoomCompleteRef.current?.();
-        }
-      } else if (viewMode === 'explore' && controls.isLocked && !searchFly) {
-        const base = MOVE.sprint ? 180 : 70;
-        const accel = base * 8;
-
-        velocity.x -= velocity.x * 8 * delta;
-        velocity.z -= velocity.z * 8 * delta;
-        velocity.y -= velocity.y * 8 * delta;
-
-        direction.z = Number(MOVE.forward) - Number(MOVE.back);
-        direction.x = Number(MOVE.right) - Number(MOVE.left);
-        direction.y = Number(MOVE.up) - Number(MOVE.down);
-        if (direction.lengthSq() > 0) direction.normalize();
-
-        velocity.z -= direction.z * accel * delta;
-        velocity.x -= direction.x * accel * delta;
-        velocity.y += direction.y * accel * delta;
-
-        controls.moveRight(-velocity.x * delta);
-        controls.moveForward(-velocity.z * delta);
-        camera.position.y += velocity.y * delta;
-
-        if (camera.position.y < 6) {
-          camera.position.y = 6;
-          velocity.y = Math.max(0, velocity.y);
+      // Atmosphere reacts to the active Simulate scenario.
+      const sc = scenarioRef.current;
+      const fog = scene.fog;
+      if (fog instanceof Fog) {
+        const baseNear = simulateOrbit ? 380 : 500;
+        const baseFar = simulateOrbit ? 2200 : 2600;
+        if (sc.kind === 'storm' && sc.intensity > 0.02) {
+          fog.near = baseNear - sc.intensity * 220;
+          fog.far = baseFar - sc.intensity * 900;
+          fog.color.set('#02060d');
+          (scene.background as Color).copy(baseBg).lerp(new Color('#050308'), sc.intensity * 0.65);
+        } else if (sc.kind === 'heat_wave' && sc.intensity > 0.02) {
+          fog.near = baseNear - 40;
+          fog.far = baseFar - 200;
+          fog.color.set('#1a0c08');
+          (scene.background as Color).set('#1a0c08').lerp(new Color('#3a1810'), sc.intensity * 0.4);
+        } else if (sc.kind === 'solar_drop' && sc.intensity > 0.02) {
+          fog.near = baseNear;
+          fog.far = baseFar - 100;
+          fog.color.set('#0a1018');
+          (scene.background as Color).copy(baseBg).lerp(new Color('#0a1018'), sc.intensity * 0.5);
+        } else {
+          fog.near = baseNear;
+          fog.far = baseFar;
+          fog.color.set('#02060d');
+          (scene.background as Color).copy(baseBg);
         }
       }
 
-      // Distance-scale futuristic signs so names stay readable in flight.
-      const showSigns = viewMode === 'explore' || viewMode === 'zoom';
+      if (simulateOrbit && orbit) {
+        orbit.update();
+      } else if (controls) {
+        if (viewMode !== 'explore' && controls.isLocked) controls.unlock();
+
+        if (searchFly && viewMode === 'explore') {
+          const u = Math.min(1, (now - searchFly.start) / SEARCH_FLY_MS);
+          const e = easeInOutCubic(u);
+          camera.position.lerpVectors(searchFly.fromPos, searchFly.toPos, e);
+          const look = new Vector3().lerpVectors(searchFly.fromLook, searchFly.toLook, e);
+          camera.lookAt(look);
+          if (u >= 1) searchFly = null;
+        } else if (viewMode === 'backdrop' && ready) {
+          camera.position.copy(BACKDROP_POS);
+          camera.lookAt(PREVIEW_LOOK);
+        } else if (viewMode === 'preview' && ready && !zoomActive) {
+          const t = now * 0.00012;
+          const radius = 780;
+          camera.position.set(
+            Math.cos(t) * radius,
+            250 + Math.sin(t * 0.65) * 40,
+            Math.sin(t) * radius * 0.85 + 180,
+          );
+          camera.lookAt(PREVIEW_LOOK);
+        } else if (zoomActive) {
+          const u = Math.min(1, (now - zoomStart) / ZOOM_MS);
+          const e = easeInOutCubic(u);
+          camera.position.lerpVectors(zoomFromPos, EXPLORE_POS, e);
+          const look = new Vector3().lerpVectors(zoomFromLook, EXPLORE_LOOK, e);
+          camera.lookAt(look);
+          // Subtle FOV punch for “dive in” feel
+          camera.fov = 68 - e * 8;
+          camera.updateProjectionMatrix();
+          if (u >= 1) {
+            zoomActive = false;
+            camera.fov = 68;
+            camera.updateProjectionMatrix();
+            camera.position.copy(EXPLORE_POS);
+            camera.lookAt(EXPLORE_LOOK);
+            onZoomCompleteRef.current?.();
+          }
+        } else if (viewMode === 'explore' && controls.isLocked && !searchFly) {
+          const base = MOVE.sprint ? 180 : 70;
+          const accel = base * 8;
+
+          velocity.x -= velocity.x * 8 * delta;
+          velocity.z -= velocity.z * 8 * delta;
+          velocity.y -= velocity.y * 8 * delta;
+
+          direction.z = Number(MOVE.forward) - Number(MOVE.back);
+          direction.x = Number(MOVE.right) - Number(MOVE.left);
+          direction.y = Number(MOVE.up) - Number(MOVE.down);
+          if (direction.lengthSq() > 0) direction.normalize();
+
+          velocity.z -= direction.z * accel * delta;
+          velocity.x -= direction.x * accel * delta;
+          velocity.y += direction.y * accel * delta;
+
+          controls.moveRight(-velocity.x * delta);
+          controls.moveForward(-velocity.z * delta);
+          camera.position.y += velocity.y * delta;
+
+          if (camera.position.y < 6) {
+            camera.position.y = 6;
+            velocity.y = Math.max(0, velocity.y);
+          }
+        }
+      }
+
+      // Distance-scale futuristic signs so names stay readable in flight / orbit.
+      const showSigns = simulateOrbit || viewMode === 'explore' || viewMode === 'zoom';
       for (const sign of signs) {
         if (!showSigns) {
           sign.visible = false;
@@ -1377,9 +1548,10 @@ export default function TorontoCityViewer({
 
     (async () => {
       try {
-        const isBackdrop = modeRef.current === 'backdrop';
-        // Home preview pans without the distribution grid; Explore / Plan-backdrop
-        // decide separately (backdrop never loads it).
+        // Plan backdrop stays silent (no labels/grid). Simulate uses the full
+        // Explore massing even if the camera starts mid-zoom.
+        const isBackdrop =
+          modeRef.current === 'backdrop' && variantRef.current !== 'simulate';
         const [{ data, fromTiger }, gridData] = await Promise.all([
           loadMassingData(),
           isBackdrop ? Promise.resolve(null) : loadGrid(),
@@ -1409,15 +1581,23 @@ export default function TorontoCityViewer({
         city = built.group;
         signs = built.signs;
         hitTargets = built.hitTargets;
+        litWindowsRef.current = built.litWindows;
+        applyScenarioWindowLights(
+          litWindowsRef.current,
+          scenarioRef.current.kind,
+          scenarioRef.current.intensity,
+        );
 
         const cn = data.landmarks?.cnTower;
         city.add(buildCnTower(cn?.x ?? 0, cn?.z ?? 0));
         scene.add(city);
         if (gridData) {
           const mesh = buildGridMesh(gridData, electric);
-          // Hidden on home cinematic pan; Explore respects the Power Grid toggle.
+          // Hidden on home cinematic pan; Explore / Simulate respect the toggle.
           const inCity =
-            modeRef.current === 'explore' || modeRef.current === 'zoom';
+            simulateOrbit ||
+            modeRef.current === 'explore' ||
+            modeRef.current === 'zoom';
           mesh.visible = inCity && gridVisibleRef.current;
           gridRef.current = mesh;
           scene.add(mesh);
@@ -1446,13 +1626,23 @@ export default function TorontoCityViewer({
         setCityReady(true);
         setStatus('');
 
-        // If we landed directly on explore, snap to explore framing.
-        if (modeRef.current === 'explore') {
+        if (simulateOrbit) {
+          camera.position.copy(ORBIT_POS);
+          camera.lookAt(ORBIT_TARGET);
+          if (orbit) {
+            orbit.target.copy(ORBIT_TARGET);
+            orbit.update();
+          }
+        } else if (modeRef.current === 'explore') {
           camera.position.copy(EXPLORE_POS);
           camera.lookAt(EXPLORE_LOOK);
         } else if (modeRef.current === 'backdrop') {
           camera.position.copy(BACKDROP_POS);
           camera.lookAt(PREVIEW_LOOK);
+        } else if (modeRef.current === 'zoom') {
+          camera.position.copy(BACKDROP_POS);
+          camera.lookAt(PREVIEW_LOOK);
+          beginZoom();
         }
       } catch (err) {
         if (!disposed) {
@@ -1472,11 +1662,13 @@ export default function TorontoCityViewer({
       controls?.removeEventListener('lock', onLock);
       controls?.removeEventListener('unlock', onUnlock);
       controls?.dispose();
+      orbit?.dispose();
       if (highlight) {
         scene.remove(highlight);
         highlight.geometry.dispose();
         (highlight.material as MeshBasicMaterial).dispose();
       }
+      litWindowsRef.current = null;
       if (city) {
         city.traverse((obj) => {
           if (obj instanceof Mesh || obj instanceof InstancedMesh) {
@@ -1523,24 +1715,32 @@ export default function TorontoCityViewer({
 
   const exploreUi = mode === 'explore';
   const backdropUi = mode === 'backdrop';
+  const simulateUi = variant === 'simulate';
+  const showCityChrome = simulateUi || (exploreUi && !backdropUi);
 
   return (
-    <div className="absolute inset-0 h-full w-full overflow-hidden bg-nc-bg">
+    <div
+      className={`overflow-hidden bg-nc-bg ${
+        simulateUi ? 'relative h-full w-full' : 'absolute inset-0 h-full w-full'
+      } ${className}`}
+    >
       <div
         ref={mountRef}
         className={`absolute inset-0 [&>canvas]:block [&>canvas]:h-full [&>canvas]:w-full ${backdropUi ? 'pointer-events-none' : ''}`}
       />
 
-      {exploreUi && (
+      {showCityChrome && (
         <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-start justify-between gap-4 p-4">
           <div className="pointer-events-auto">
             <div className="flex items-center gap-3">
-              <Link
-                to="/"
-                className="rounded-md border border-nc-border/80 bg-nc-panel/80 px-3 py-1.5 text-sm backdrop-blur-md transition hover:border-nc-renew"
-              >
-                ← NightCity
-              </Link>
+              {!simulateUi && (
+                <Link
+                  to="/"
+                  className="rounded-md border border-nc-border/80 bg-nc-panel/80 px-3 py-1.5 text-sm backdrop-blur-md transition hover:border-nc-renew"
+                >
+                  ← NightCity
+                </Link>
+              )}
               <button
                 type="button"
                 role="switch"
@@ -1567,13 +1767,17 @@ export default function TorontoCityViewer({
           <div className="rounded-md border border-nc-border/60 bg-nc-panel/70 px-3 py-2 text-right backdrop-blur-md">
             <div className="text-sm font-semibold tracking-wide">Toronto</div>
             <div className="text-[11px] uppercase tracking-[0.16em] text-nc-muted">
-              {labeled > 0 ? `${labeled} nameplates · click to inspect` : 'Electrified massing'}
+              {simulateUi
+                ? '2.5D orbit · drag to rotate'
+                : labeled > 0
+                  ? `${labeled} nameplates · click to inspect`
+                  : 'Electrified massing'}
             </div>
           </div>
         </div>
       )}
 
-      {exploreUi && locked && (
+      {!simulateUi && showCityChrome && locked && (
         <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2">
           <div className="h-5 w-5 -translate-y-px">
             <div className="absolute left-1/2 top-0 h-2 w-px -translate-x-1/2 bg-cyan-300/90" />
@@ -1584,7 +1788,7 @@ export default function TorontoCityViewer({
         </div>
       )}
 
-      {exploreUi && electricity && (
+      {!simulateUi && showCityChrome && electricity && (
         <BuildingEnergyPanel
           geometry={electricity}
           profile={ewrbProfile}
@@ -1596,13 +1800,19 @@ export default function TorontoCityViewer({
         />
       )}
 
-      {status && !error && mode !== 'zoom' && mode !== 'backdrop' && (
+      {status && !error && mode !== 'backdrop' && (
         <div className="absolute left-1/2 top-1/2 z-20 -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-nc-border/80 bg-nc-panel/85 px-8 py-5 text-sm text-nc-muted backdrop-blur-md">
           {status}
         </div>
       )}
 
-      {exploreUi && cityReady && !locked && !error && !status && (
+      {simulateUi && cityReady && !error && !status && (
+        <div className="pointer-events-none absolute bottom-14 left-1/2 z-10 -translate-x-1/2 rounded-lg border border-nc-border/70 bg-nc-panel/80 px-4 py-2 text-center text-[11px] text-nc-muted backdrop-blur-md">
+          Drag to rotate · scroll to zoom · streets stay locked
+        </div>
+      )}
+
+      {!simulateUi && showCityChrome && cityReady && !locked && !error && !status && (
         <button
           type="button"
           className="absolute left-1/2 top-20 z-10 -translate-x-1/2 rounded-2xl border border-nc-border/80 bg-nc-panel/85 px-8 py-5 text-center shadow-xl shadow-black/50 backdrop-blur-md transition hover:border-nc-renew sm:top-24"
@@ -1628,10 +1838,10 @@ export default function TorontoCityViewer({
         </div>
       )}
 
-      {exploreUi && (
+      {showCityChrome && (
         <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex items-end justify-between gap-4 p-3">
           <div className="flex flex-col gap-2">
-            {cityReady && searchTargets.length > 0 && (
+            {!simulateUi && cityReady && searchTargets.length > 0 && (
               <BuildingSearch
                 targets={searchTargets}
                 onActivate={() => unlockFlyRef.current()}
@@ -1651,6 +1861,24 @@ export default function TorontoCityViewer({
           </div>
           <p className="max-w-[50%] text-right text-[10px] leading-snug text-nc-muted/90">{credit}</p>
         </div>
+      )}
+
+      {/* Weather overlays for Simulate — sit above the WebGL canvas */}
+      {simulateUi && scenarioKind === 'storm' && effectIntensity > 0.05 && (
+        <div className="pointer-events-none absolute inset-0 z-[5] overflow-hidden">
+          <div className="absolute inset-0 bg-[#02060d]/25" />
+          <div
+            className="absolute inset-0 opacity-50"
+            style={{
+              backgroundImage:
+                'repeating-linear-gradient(-18deg, transparent, transparent 6px, rgba(180,220,255,0.12) 6px, rgba(180,220,255,0.12) 7px)',
+              animation: 'nc-rain 0.55s linear infinite',
+            }}
+          />
+        </div>
+      )}
+      {simulateUi && scenarioKind === 'heat_wave' && effectIntensity > 0.05 && (
+        <div className="pointer-events-none absolute inset-0 z-[5] bg-gradient-to-t from-orange-500/20 via-transparent to-orange-400/10 nc-heat-shimmer" />
       )}
     </div>
   );

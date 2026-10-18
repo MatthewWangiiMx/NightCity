@@ -62,8 +62,8 @@ export const SCENARIOS: Scenario[] = [
   {
     id: 'storm',
     kind: 'storm',
-    label: 'City-wide Blackout',
-    description: 'A storm takes a transmission line and local generation out of service.',
+    label: 'Thunderstorm',
+    description: 'A thunderstorm takes a transmission line and local generation out of service.',
     event_time: '18:00',
   },
   {

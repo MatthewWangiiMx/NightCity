@@ -1,5 +1,7 @@
 /** Open-Meteo daily forecast for downtown Toronto (no API key; CORS-enabled). */
 
+import type { ScenarioKind } from '@/api/types';
+
 export const TORONTO = { latitude: 43.6532, longitude: -79.3832 };
 
 export type DailyForecastDay = {
@@ -43,6 +45,43 @@ export function weatherCodeLabel(code: number): string {
   if (code >= 85 && code <= 86) return 'Snow showers';
   if (code >= 95) return 'Thunderstorm';
   return 'Mixed';
+}
+
+/**
+ * Map a Toronto forecast day to the disruption scenario the simulator knows.
+ * Thunderstorms and heavy wet weather → storm; heat → heat_wave; cloud → solar_drop.
+ */
+export function scenarioKindFromForecastDay(day: DailyForecastDay): ScenarioKind {
+  if (day.weatherCode >= 95) return 'storm';
+  if (day.tempMaxC >= 28) return 'heat_wave';
+  if (day.weatherCode >= 80 || day.precipMm >= 8) return 'storm';
+  if (day.weatherCode >= 61 && day.precipMm >= 4) return 'storm';
+  if (day.tempMaxC >= 25 && day.weatherCode <= 1) return 'heat_wave';
+  if (day.weatherCode >= 2) return 'solar_drop';
+  return 'solar_drop';
+}
+
+/** Human title for the simulated weather event (not the raw WMO label alone). */
+export function weatherEventTitle(day: DailyForecastDay): string {
+  if (day.weatherCode >= 95) return 'Thunderstorm';
+  if (day.tempMaxC >= 28) return 'Heat Wave';
+  if (day.weatherCode >= 80 || day.precipMm >= 8) return 'Heavy Rain';
+  if (day.weatherCode >= 71 && day.weatherCode <= 86) return 'Snow Event';
+  if (day.weatherCode >= 61) return 'Rain Event';
+  if (day.weatherCode >= 3) return 'Heavy Cloud Cover';
+  if (day.weatherCode >= 2) return 'Cloud Cover';
+  if (day.tempMaxC >= 25) return 'Warm Clear Day';
+  return weatherCodeLabel(day.weatherCode);
+}
+
+/** Days worth calling out as disruption candidates on the Simulate picker. */
+export function isNotableWeatherDay(day: DailyForecastDay): boolean {
+  return (
+    day.weatherCode >= 61 ||
+    day.tempMaxC >= 27 ||
+    day.precipMm >= 5 ||
+    day.windMaxKmh >= 45
+  );
 }
 
 export async function fetchTorontoDailyForecast(forecastDays = 16): Promise<DailyForecast> {

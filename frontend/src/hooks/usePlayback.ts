@@ -19,5 +19,11 @@ export function usePlayback(total: number, tickMs = 400) {
     return () => window.clearInterval(id);
   }, [playing, total, tickMs]);
 
-  return { step, setStep, playing, togglePlay: () => setPlaying((p) => !p) };
+  return {
+    step,
+    setStep,
+    playing,
+    play: () => setPlaying(true),
+    togglePlay: () => setPlaying((p) => !p),
+  };
 }

@@ -67,9 +67,80 @@ body {
   animation: nc-pulse 2.4s ease-in-out infinite;
 }
 
+@keyframes nc-rain {
+  to {
+    stroke-dashoffset: -120;
+  }
+}
+
+.nc-rain {
+  stroke-dasharray: 4 18;
+  animation: nc-rain 0.55s linear infinite;
+}
+
+@keyframes nc-lightning {
+  0%,
+  88%,
+  100% {
+    opacity: 0;
+  }
+  90%,
+  93% {
+    opacity: 0.85;
+  }
+  91.5% {
+    opacity: 0.15;
+  }
+}
+
+.nc-lightning {
+  animation: nc-lightning 4.2s ease-in-out infinite;
+}
+
+@keyframes nc-heat-shimmer {
+  0%,
+  100% {
+    opacity: 0.2;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.nc-heat-shimmer {
+  animation: nc-heat-shimmer 2.8s ease-in-out infinite;
+}
+
+@keyframes nc-flicker {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  40% {
+    opacity: 0.35;
+  }
+  42% {
+    opacity: 0.9;
+  }
+  60% {
+    opacity: 0.2;
+  }
+  61% {
+    opacity: 0.75;
+  }
+}
+
+.nc-flicker {
+  animation: nc-flicker 3.6s steps(2, end) infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .nc-flow,
-  .nc-pulse {
+  .nc-pulse,
+  .nc-rain,
+  .nc-lightning,
+  .nc-heat-shimmer,
+  .nc-flicker {
     animation: none;
   }
 }

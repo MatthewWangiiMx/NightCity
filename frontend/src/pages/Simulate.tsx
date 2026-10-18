@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import Timeline from '@/components/map/Timeline';
 import Panel from '@/components/Panel';
 import CityPageBackdrop from '@/components/map/CityPageBackdrop';
@@ -35,12 +36,27 @@ function clockLabel(iso: string) {
 }
 
 export default function Simulate() {
-  const { result, loading, live, run } = useRun();
+  const location = useLocation();
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [location.key]);
+
+  const appliedPlanState = location.state as {
+    fromPlanApply?: boolean;
+    appliedPlanDay?: DailyForecastDay;
+  } | null;
+  const appliedPlanDay = appliedPlanState?.fromPlanApply
+    ? appliedPlanState.appliedPlanDay ?? null
+    : null;
+  const initialScenario = appliedPlanDay
+    ? scenarioKindFromForecastDay(appliedPlanDay)
+    : undefined;
+  const { result, loading, live, run } = useRun(initialScenario);
   const forecast = useTorontoForecast();
   /** Day highlighted on the picker (not yet confirmed). */
   const [draftDay, setDraftDay] = useState<DailyForecastDay | null>(null);
   /** Confirmed day — advances to the city results stage. */
-  const [activeDay, setActiveDay] = useState<DailyForecastDay | null>(null);
+  const [activeDay, setActiveDay] = useState<DailyForecastDay | null>(appliedPlanDay);
   const [confirming, setConfirming] = useState(false);
 
   const steps = result.optimized;

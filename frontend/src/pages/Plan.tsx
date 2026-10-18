@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import Panel from '@/components/Panel';
 import GridLoadProfile from '@/components/charts/GridLoadProfile';
 import EnergyMixDonut from '@/components/charts/EnergyMixDonut';
@@ -72,6 +73,7 @@ function Slider({
  * plan and labeled as such — they are not simulator output.
  */
 export default function Plan() {
+  const navigate = useNavigate();
   const { result } = useRun();
   const forecast = usePlanForecast();
   const [selectedDay, setSelectedDay] = useState<DailyForecastDay | null>(null);
@@ -279,6 +281,11 @@ export default function Plan() {
           </p>
           <button
             type="button"
+            onClick={() =>
+              navigate('/plan/simulate', {
+                state: { fromPlanApply: true, appliedPlanDay: selectedDay },
+              })
+            }
             className="rounded-xl bg-nc-renew px-4 py-3 text-sm font-medium text-nc-bg shadow-lg shadow-nc-renew/20 transition hover:brightness-110"
           >
             Apply plan

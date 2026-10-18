@@ -20,7 +20,7 @@ export default function App() {
           <Route index element={<Home />} />
           <Route path="explore" element={<Explore />} />
         </Route>
-        <Route path="/simulate" element={<AppliedPlanRoute />} />
+        <Route path="/plan/simulate" element={<AppliedPlanRoute />} />
         <Route path="/plan" element={<Plan />} />
         <Route path="/building/:buildingId" element={<BuildingDetail />} />
       </Routes>

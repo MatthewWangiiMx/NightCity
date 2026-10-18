@@ -22,7 +22,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const onHome = path === '/';
   const onExploreCity = path === '/explore';
   const onPlan = path === '/plan';
-  const onSimulate = path === '/simulate';
+  const onSimulate = path === '/plan/simulate';
   const fullBleed = onHome || onExploreCity;
   const cityBackdrop = onPlan || onSimulate;
 

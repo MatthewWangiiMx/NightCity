@@ -522,7 +522,7 @@ def list_buildings_for_massing(
                 SELECT b.id, b.source_file, b.source_id, b.height_m, b.levels, b.properties,
                        ST_AsGeoJSON(b.geom)::json AS geojson,
                        bn.transformer_id AS node_id
-                FROM buildings
+                FROM buildings b
                 LEFT JOIN building_nodes bn ON bn.building_id = b.id
                 WHERE b.geom && ST_MakeEnvelope(:lon_min, :lat_min, :lon_max, :lat_max, 4326)
                   AND ST_Intersects(

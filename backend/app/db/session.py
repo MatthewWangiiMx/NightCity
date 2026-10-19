@@ -4,11 +4,13 @@ The app runs without a database when USE_DATABASE=false; every call site must
 tolerate `None` so the demo never dies on a connection error.
 """
 
+import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from app.config import get_settings
 
@@ -29,7 +31,16 @@ def get_engine() -> Engine | None:
             if url.startswith(scheme):
                 url = "postgresql+psycopg://" + url[len(scheme):]
                 break
-        _engine = create_engine(url, pool_pre_ping=True, pool_size=5)
+        # Pooling has to differ by host. A long-lived uvicorn process wants a
+        # real pool; a serverless function does not. Each concurrent Vercel
+        # instance gets its own process, so a pool of 5 there means 5 held
+        # connections *per instance* and Timescale's connection ceiling is hit
+        # under trivial load. NullPool opens one connection per request and
+        # closes it, trading a little latency for not falling over.
+        if os.environ.get("VERCEL"):
+            _engine = create_engine(url, pool_pre_ping=True, poolclass=NullPool)
+        else:
+            _engine = create_engine(url, pool_pre_ping=True, pool_size=5)
         _SessionLocal = sessionmaker(bind=_engine, expire_on_commit=False)
     return _engine
 

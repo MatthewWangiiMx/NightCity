@@ -1,3 +1,6 @@
+# Runtime dependencies. Kept deliberately small: this is what ships to the
+# Vercel serverless function, which has a 250 MB unzipped bundle limit.
+# Offline tooling lives in requirements-scripts.txt.
 fastapi>=0.115
 uvicorn[standard]>=0.34
 pydantic>=2.10
@@ -7,7 +10,3 @@ psycopg[binary]>=3.2.10
 python-dotenv>=1.0
 httpx>=0.28
 anthropic>=0.42
-# PostGIS building import support
-geopandas>=1.0
-geoalchemy2>=0.15
-psycopg2-binary>=2.9

@@ -1,0 +1,9 @@
+# Offline tooling only — the PostGIS building import in
+# scripts/buildings/import_builds.py. Not needed to serve the API, and
+# deliberately excluded from the deployed bundle (geopandas pulls in pandas
+# and GDAL bindings). Install with:
+#     pip install -r requirements.txt -r requirements-scripts.txt
+-r requirements.txt
+geopandas>=1.0
+geoalchemy2>=0.15
+psycopg2-binary>=2.9

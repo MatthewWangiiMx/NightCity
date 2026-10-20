@@ -375,7 +375,18 @@ def _apply_weather_to_steps(
 
 
 def list_buildings_for_loads(limit: int = 1200) -> list[dict]:
-    """Building rows with centroid + footprint for load synthesis."""
+    """One row per *structure*, with centroid and footprint, for load synthesis.
+
+    3D Massing splits a complex into a podium plus the towers inside it, so a
+    row-per-part query counts the same ground several times -- 15% of downtown
+    ground area -- and inflates every absolute MWh and tCO2e that divides by
+    floor space. Each structure is therefore collapsed to its tallest part,
+    carrying the structure's union footprint (`structure_footprint_m2`) rather
+    than that part's own.
+
+    Rows not yet clustered fall back to their own id and area, so this degrades
+    to the previous behaviour instead of returning nothing.
+    """
     with get_session() as s:
         if s is None:
             return []
@@ -384,12 +395,27 @@ def list_buildings_for_loads(limit: int = 1200) -> list[dict]:
         rows = s.execute(
             text(
                 """
+                WITH scoped AS (
+                    SELECT id, height_m, levels, properties, geom,
+                           COALESCE(structure_id, id) AS sid,
+                           structure_footprint_m2
+                    FROM buildings
+                    WHERE geom && ST_MakeEnvelope(:lon_min, :lat_min, :lon_max, :lat_max, 4326)
+                      AND NOT is_duplicate
+                ),
+                tallest AS (
+                    SELECT DISTINCT ON (sid) *
+                    FROM scoped
+                    ORDER BY sid, COALESCE(height_m, 0) DESC, id
+                )
                 SELECT id, height_m, levels, properties,
                        ST_X(ST_Centroid(geom)) AS lon,
                        ST_Y(ST_Centroid(geom)) AS lat,
-                       ST_Area(geography(ST_Force2D(geom))) AS footprint_m2
-                FROM buildings b
-                WHERE geom && ST_MakeEnvelope(:lon_min, :lat_min, :lon_max, :lat_max, 4326)
+                       COALESCE(
+                           structure_footprint_m2,
+                           ST_Area(geography(ST_Force2D(geom)))
+                       ) AS footprint_m2
+                FROM tallest
                 ORDER BY COALESCE(height_m, 0) DESC
                 LIMIT :limit
                 """
@@ -512,15 +538,30 @@ def list_buildings_for_massing(
     lat_max: float,
     limit: int = 50_000,
 ) -> list[dict]:
-    """Downtown footprints from TigerData `buildings`, as GeoJSON + attributes."""
+    """Downtown footprints from TigerData `buildings`, as GeoJSON + attributes.
+
+    3D Massing publishes a complex as several parts, so each row also carries
+    the `structure_id` grouping them (see migrations/004_structures.sql) and
+    `structure_footprint_m2`, the *union* ground area of that structure. Summing
+    the parts' own footprints double-counts wherever a tower sits inside a
+    podium -- 15% of ground area on a downtown block -- so anything absolute
+    has to divide by the structure, not by the part.
+
+    Exact duplicate geometries are collapsed to their lowest id: the published
+    file repeats some footprints verbatim, and drawing them twice only produces
+    z-fighting.
+    """
     with get_session() as s:
         if s is None:
             return []
         rows = s.execute(
             text(
                 """
-                SELECT b.id, b.source_file, b.source_id, b.height_m, b.levels, b.properties,
+                SELECT b.id, b.source_file, b.source_id, b.height_m, b.levels,
+                       b.properties,
                        ST_AsGeoJSON(b.geom)::json AS geojson,
+                       COALESCE(b.structure_id, b.id) AS structure_id,
+                       b.structure_footprint_m2,
                        bn.transformer_id AS node_id
                 FROM buildings b
                 LEFT JOIN building_nodes bn ON bn.building_id = b.id
@@ -529,6 +570,7 @@ def list_buildings_for_massing(
                         b.geom,
                         ST_MakeEnvelope(:lon_min, :lat_min, :lon_max, :lat_max, 4326)
                       )
+                  AND NOT b.is_duplicate
                 ORDER BY COALESCE(b.height_m, 0) DESC
                 LIMIT :limit
                 """

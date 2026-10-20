@@ -190,6 +190,11 @@ def row_to_massing_building(row: dict[str, Any]) -> dict[str, Any] | None:
     )
     return {
         "id": row["id"],
+        # Which logical structure this part belongs to, and that structure's
+        # union ground area. Several parts share a structure_id, so anything
+        # counting buildings or area works from these rather than from `id`.
+        "structure_id": row.get("structure_id", row["id"]),
+        "structure_footprint_m2": row.get("structure_footprint_m2"),
         "node_id": row.get("node_id"),
         "h": cons["h"],
         "levels": cons["levels"],

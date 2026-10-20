@@ -34,6 +34,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export type MassingBuilding = {
   id?: number | string;
+  /** Logical structure this part belongs to. 3D Massing splits a complex into
+   *  a podium plus the towers inside it, so several parts share one of these.
+   *  Absent on the static cache, which is already one row per building. */
+  structure_id?: number | string;
+  /** The structure's union ground area. Summing the parts' own footprints
+   *  double-counts where a tower sits inside a podium. */
+  structure_footprint_m2?: number | null;
   node_id?: string;
   h: number;
   levels?: number;

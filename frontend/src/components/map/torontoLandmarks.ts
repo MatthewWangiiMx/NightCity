@@ -150,6 +150,10 @@ export type MatchedLandmark = {
 
 type BuildingRef = {
   index: number;
+  /** The structure this part belongs to, so a claim can retire the whole
+   *  building rather than one of its polygons. Falls back to the index when the
+   *  source has no grouping (the static massing cache). */
+  structure: string;
   x: number;
   z: number;
   h: number;
@@ -164,11 +168,20 @@ function ringArea(ring: [number, number][]) {
   return Math.abs(a * 0.5);
 }
 
-/** Greedy nearest-neighbour match with height gates; each footprint used at most once.
- *  Only real named landmarks get plates — Toronto 3D Massing has no per-building names.
+/** Greedy nearest-neighbour match with height gates; each *structure* used at
+ *  most once. Only real named landmarks get plates — Toronto 3D Massing has no
+ *  per-building names.
+ *
+ *  Claiming by structure rather than by polygon is what keeps two plates off one
+ *  building. 3D Massing splits a tower into dozens of parts, and neighbouring
+ *  landmarks sit well inside each other's search radius: Scotia Plaza is 26
+ *  parts whose nearest polygons are 27 m from Bay Adelaide East's coordinate,
+ *  closer than Bay Adelaide's own tower at 59 m. Retiring one polygon left the
+ *  other 25 free, so the second landmark re-claimed the same building and both
+ *  nameplates stacked on it.
  */
 export function matchLandmarksToBuildings(
-  buildings: { h: number; rings: [number, number][][] }[],
+  buildings: { h: number; rings: [number, number][][]; structure_id?: number | string }[],
   maxDistM = 110,
 ): MatchedLandmark[] {
   const refs: BuildingRef[] = buildings.map((b, index) => {
@@ -179,32 +192,26 @@ export function matchLandmarksToBuildings(
         : ring;
     const x = body.reduce((s, p) => s + p[0], 0) / body.length;
     const z = body.reduce((s, p) => s + p[1], 0) / body.length;
-    return { index, x, z, h: b.h, footprint_m2: ringArea(ring) };
+    return {
+      index,
+      structure: b.structure_id != null ? `s${b.structure_id}` : `i${index}`,
+      x,
+      z,
+      h: b.h,
+      footprint_m2: ringArea(ring),
+    };
   });
 
-  const used = new Set<number>();
+  const used = new Set<string>();
   const matches: MatchedLandmark[] = [];
 
   for (const landmark of TORONTO_LANDMARKS) {
-    if (landmark.id === 'cn-tower') {
-      const local = lonLatToLocal(landmark.lon, landmark.lat);
-      matches.push({
-        landmark,
-        buildingIndex: -1,
-        x: local.x,
-        z: local.z,
-        h: 553,
-        footprint_m2: 1200,
-      });
-      continue;
-    }
-
     const local = lonLatToLocal(landmark.lon, landmark.lat);
     let best: BuildingRef | null = null;
     let bestScore = Infinity;
 
     for (const ref of refs) {
-      if (used.has(ref.index)) continue;
+      if (used.has(ref.structure)) continue;
       if (landmark.minH != null && ref.h < landmark.minH) continue;
       if (landmark.maxH != null && ref.h > landmark.maxH) continue;
       const dist = Math.hypot(ref.x - local.x, ref.z - local.z);
@@ -220,15 +227,40 @@ export function matchLandmarksToBuildings(
       }
     }
 
-    if (!best) continue;
-    used.add(best.index);
+    // The CN Tower is the one landmark the massing may not carry a footprint
+    // for -- the curated cache had none, TigerData has one at 443 m (roof, not
+    // antenna tip). When a footprint is there it is claimed like any other, so
+    // the tower is a real clickable building; when it is not, fall back to a
+    // synthetic shaft at its true coordinates so the skyline is still right.
+    if (!best) {
+      if (landmark.id === 'cn-tower') {
+        matches.push({
+          landmark,
+          buildingIndex: -1,
+          x: local.x,
+          z: local.z,
+          h: 553,
+          footprint_m2: 1200,
+        });
+      }
+      continue;
+    }
+    // The nearest polygon of a structure can be an edge of its podium, which
+    // would hang the nameplate off the side of the building. Promote the claim
+    // to the tallest part of the same structure so the plate sits on the tower.
+    const anchor = refs.reduce(
+      (tallest, ref) =>
+        ref.structure === best!.structure && ref.h > tallest.h ? ref : tallest,
+      best,
+    );
+    used.add(anchor.structure);
     matches.push({
       landmark,
-      buildingIndex: best.index,
-      x: best.x,
-      z: best.z,
-      h: best.h,
-      footprint_m2: best.footprint_m2,
+      buildingIndex: anchor.index,
+      x: anchor.x,
+      z: anchor.z,
+      h: anchor.h,
+      footprint_m2: anchor.footprint_m2,
     });
   }
 

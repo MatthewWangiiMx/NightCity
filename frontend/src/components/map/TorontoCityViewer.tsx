@@ -148,6 +148,10 @@ const KEY_MAP: Record<string, KeyAction> = {
 
 type MassingBuilding = {
   id?: number | string;
+  /** Logical structure this part belongs to — several parts share one. */
+  structure_id?: number | string;
+  /** The structure's union ground area, not this part's. */
+  structure_footprint_m2?: number | null;
   node_id?: string;
   h: number;
   levels?: number;
@@ -625,6 +629,21 @@ function addLandmarkExtras(match: MatchedLandmark, group: Group, roofY?: number)
 export type BuildingPick = {
   buildingIndex: number;
   buildingId?: number | string;
+  /** The structure key and union area this part belongs to. The EWRB intensity
+   *  is assigned by hashing the id, so the panel has to ask about the same
+   *  structure the map coloured, or the number shown contradicts the colour. */
+  structureId?: number | string;
+  structureFootprintM2?: number | null;
+  /** The structure's cohort kind and tallest height. `kind` selects the EWRB
+   *  property type, so a podium must not answer with its own. */
+  structureKind?: string;
+  structureH?: number;
+  /** Centre and span of the whole structure, so the selection box outlines the
+   *  building and every part of it highlights as one thing. */
+  structureX?: number;
+  structureZ?: number;
+  structureW?: number;
+  structureD?: number;
   name: string;
   kind: string;
   h: number;
@@ -730,6 +749,57 @@ function buildCityMesh(
     depthWrite: false,
   });
 
+  // What each structure is, decided once from its tallest part.
+  //
+  // `kind` selects the EWRB cohort, so it has to describe the building rather
+  // than the polygon clicked: the Ritz-Carlton's tower answers as a hotel at
+  // 279.9 kWh/m2, while its 10 m podium answers as 'structure' -> Office at
+  // 185.5. Same id, same area, different cohort. The map asks about the tallest
+  // part, so every part of the structure has to answer the same way or the
+  // panel contradicts the colour.
+  const structureKeyOf = (b: MassingBuilding, index: number) =>
+    b.structure_id != null ? `s${b.structure_id}` : `i${index}`;
+  // The bounds come along too, so the selection box outlines the building
+  // rather than the polygon clicked. A roof element that juts out of its tower
+  // is still the same building, and highlighting it on its own reads as a
+  // second clickable thing sitting on top of the first.
+  type StructureInfo = {
+    h: number;
+    kind: string;
+    name: string;
+    minX: number;
+    maxX: number;
+    minZ: number;
+    maxZ: number;
+  };
+  const structureInfo = new Map<string, StructureInfo>();
+  buildings.forEach((building, index) => {
+    if (!isElectrifiedBuilding(building)) return;
+    const key = structureKeyOf(building, index);
+    const bb = ringBBox(building.rings[0]);
+    const prev = structureInfo.get(key);
+    if (prev) {
+      prev.minX = Math.min(prev.minX, bb.cx - bb.w / 2);
+      prev.maxX = Math.max(prev.maxX, bb.cx + bb.w / 2);
+      prev.minZ = Math.min(prev.minZ, bb.cz - bb.d / 2);
+      prev.maxZ = Math.max(prev.maxZ, bb.cz + bb.d / 2);
+      if (prev.h >= building.h) return;
+    }
+    const match = landmarkByIndex.get(index);
+    structureInfo.set(key, {
+      h: building.h,
+      kind: match?.landmark.kind ?? (building.h >= 80 ? 'office' : 'structure'),
+      name:
+        match?.landmark.short ??
+        match?.landmark.name ??
+        `Building · ${Math.round(building.h)}m`,
+      minX: prev ? prev.minX : bb.cx - bb.w / 2,
+      maxX: prev ? prev.maxX : bb.cx + bb.w / 2,
+      minZ: prev ? prev.minZ : bb.cz - bb.d / 2,
+      maxZ: prev ? prev.maxZ : bb.cz + bb.d / 2,
+    });
+  });
+
   buildings.forEach((building, index) => {
     if (!isElectrifiedBuilding(building)) return;
     const outer = building.rings[0];
@@ -762,6 +832,15 @@ function buildCityMesh(
       const band = extrudeUp(bandShape, 1.1, shaftH - 0.2);
       accentGeos.push(band);
       accentIdx.push(index);
+    } else {
+      // Every building needs one band, because the band is what carries the EUI
+      // colour. Crowns only exist at 90 m and up, and 87% of the buildings in
+      // the worst quartile are shorter than that -- without this they could
+      // never be painted, however heavy their reported intensity.
+      const bandShape = makeShape(outer, holes, 1.2);
+      const band = extrudeUp(bandShape, 0.9, Math.max(0.1, buildH - 1.4));
+      accentGeos.push(band);
+      accentIdx.push(index);
     }
 
     // Mid-tower mechanical belt on very tall buildings
@@ -775,11 +854,22 @@ function buildCityMesh(
     // Invisible click proxy (raycastable)
     const hit = new Mesh(new BoxGeometry(bbox.w, buildH, bbox.d), hitMat);
     hit.position.set(bbox.cx, buildH / 2, bbox.cz);
+    const info = structureInfo.get(structureKeyOf(building, index));
     hit.userData.pick = {
       buildingIndex: index,
       buildingId: building.id,
-      name: match?.landmark.short ?? match?.landmark.name ?? `Building · ${Math.round(h)}m`,
-      kind: match?.landmark.kind ?? (h >= 80 ? 'office' : 'structure'),
+      structureId: building.structure_id,
+      structureFootprintM2: building.structure_footprint_m2 ?? null,
+      // All three describe the structure, so clicking a podium reports the same
+      // building -- and the same cohort -- as clicking its tower.
+      structureKind: info?.kind,
+      structureH: info?.h,
+      structureX: info ? (info.minX + info.maxX) / 2 : undefined,
+      structureZ: info ? (info.minZ + info.maxZ) / 2 : undefined,
+      structureW: info ? info.maxX - info.minX : undefined,
+      structureD: info ? info.maxZ - info.minZ : undefined,
+      name: info?.name ?? `Building · ${Math.round(h)}m`,
+      kind: info?.kind ?? (h >= 80 ? 'office' : 'structure'),
       h,
       footprint_m2: match?.footprint_m2 ?? ringArea(outer),
       x: bbox.cx,
@@ -868,8 +958,12 @@ function buildCityMesh(
       const roofY = visual?.buildH ?? match.h;
       const hasCrown = (visual?.crownH ?? 0) > 0;
 
-      if (match.landmark.id !== 'cn-tower') addLandmarkExtras(match, group, roofY);
-      else {
+      // A matched landmark is a real footprint and gets the usual crown, ring
+      // and nameplate. Only an unmatched CN Tower needs the synthetic shaft and
+      // its own hit target -- drawing both would put a cylinder inside the real
+      // tower and let the generic building win the click.
+      if (match.buildingIndex >= 0) addLandmarkExtras(match, group, roofY);
+      else if (match.landmark.id === 'cn-tower') {
         const cnHit = new Mesh(new CylinderGeometry(18, 22, 553, 12), hitMat);
         cnHit.position.set(match.x, 276, match.z);
         cnHit.userData.pick = {
@@ -1481,14 +1575,26 @@ export default function TorontoCityViewer({
         clearEwrb();
         return;
       }
-      const id = pick.buildingId != null ? `tiger-${pick.buildingId}` : `b-${pick.buildingIndex}`;
+      // Must match `idForIndex` in the mesh effect exactly. EWRB hashes this
+      // string to place the building in its cohort, so a part-based key here
+      // would report a different intensity than the one the map painted -- the
+      // panel reading 230 on a building coloured for 400, and vice versa.
+      const id =
+        pick.structureId != null
+          ? `tiger-s${pick.structureId}`
+          : pick.buildingId != null
+            ? `tiger-${pick.buildingId}`
+            : `b-${pick.buildingIndex}`;
+      // The structure's union area, for the same reason: floor area drives the
+      // absolute figures, and the map asked about the whole building.
+      const ewrbFootprint = pick.structureFootprintM2 ?? pick.footprint_m2;
       setElectricity(
         estimateBuildingElectricity({
           id,
           name: pick.name,
           kind: pick.kind,
           height_m: pick.h,
-          footprint_m2: pick.footprint_m2,
+          footprint_m2: ewrbFootprint,
           seed: pick.buildingIndex * 17 + Math.round(pick.h),
           floors: pick.levels,
           floors_estimated: pick.floors_estimated,
@@ -1507,9 +1613,9 @@ export default function TorontoCityViewer({
       loadEwrb({
         id,
         name: pick.name,
-        kind: pick.kind,
-        footprint_m2: pick.footprint_m2,
-        height_m: pick.h,
+        kind: pick.structureKind ?? pick.kind,
+        footprint_m2: ewrbFootprint,
+        height_m: pick.structureH ?? pick.h,
         levels: pick.levels ?? null,
         lat,
         lon,
@@ -1661,8 +1767,20 @@ export default function TorontoCityViewer({
         (highlight.material as MeshBasicMaterial).dispose();
         highlight = null;
       }
+      // Outline the structure when its bounds are known, so clicking a podium,
+      // a tower or a roof element all highlight the one building. Fall back to
+      // the part's own footprint for the static cache, which has no grouping.
+      const h = pick.structureH ?? pick.h;
+      const w =
+        pick.structureW != null
+          ? Math.max(12, pick.structureW)
+          : Math.max(12, Math.sqrt(pick.footprint_m2) * 0.9);
+      const d =
+        pick.structureD != null
+          ? Math.max(12, pick.structureD)
+          : Math.max(12, Math.sqrt(pick.footprint_m2) * 0.9);
       const box = new Mesh(
-        new BoxGeometry(Math.max(12, Math.sqrt(pick.footprint_m2) * 0.9), pick.h + 4, Math.max(12, Math.sqrt(pick.footprint_m2) * 0.9)),
+        new BoxGeometry(w, h + 4, d),
         new MeshBasicMaterial({
           color: '#22d3ee',
           transparent: true,
@@ -1670,7 +1788,7 @@ export default function TorontoCityViewer({
           depthWrite: false,
         }),
       );
-      box.position.set(pick.x, pick.h / 2, pick.z);
+      box.position.set(pick.structureX ?? pick.x, h / 2, pick.structureZ ?? pick.z);
       highlight = box;
       scene.add(box);
     };
@@ -2020,16 +2138,38 @@ export default function TorontoCityViewer({
         if (!isBackdrop) {
           // Ids must match the click path exactly, or a building's colour would
           // disagree with the EUI its own panel reports.
-          const idForIndex = (i: number) =>
-            electric[i].id != null ? `tiger-${electric[i].id}` : `b-${i}`;
-          const idToIndex = new Map<string, number>();
+          //
+          // The key is the *structure*, not the part. EWRB assigns an intensity
+          // by hashing this string, so keying on the part would hand one complex
+          // a separate draw per polygon: a podium ranked against the tower
+          // growing out of it, and several top-five slots for one building.
+          const idForIndex = (i: number) => {
+            const b = electric[i];
+            if (b.structure_id != null) return `tiger-s${b.structure_id}`;
+            return b.id != null ? `tiger-${b.id}` : `b-${i}`;
+          };
+          // One key now covers every part of a structure, so a returned EUI has
+          // to paint all of them.
+          const idToIndices = new Map<string, number[]>();
           // Same label the inspector shows, so the legend and the panel agree.
           const nameByIndex = new Map<number, string>();
           // Kept so a top-5 row can fly the camera to its building.
           const targetByIndex = new Map<number, SearchTarget>();
-          const payload = electric.map((b, i) => {
+          // Index every part under its structure key first, so the request can
+          // carry one row per structure while the response still paints all of
+          // its parts.
+          electric.forEach((_, i) => {
+            const key = idForIndex(i);
+            const list = idToIndices.get(key);
+            if (list) list.push(i);
+            else idToIndices.set(key, [i]);
+          });
+          // The tallest part speaks for the structure: its height and storey
+          // count are what EWRB's floor-area estimate should work from, not a
+          // 10 m podium's.
+          const seenStructure = new Set<string>();
+          const perPart = electric.map((b, i) => {
             const id = idForIndex(i);
-            idToIndex.set(id, i);
             const outer = b.rings[0];
             const match = matches.find((m) => m.buildingIndex === i);
             nameByIndex.set(
@@ -2064,27 +2204,53 @@ export default function TorontoCityViewer({
               levels: b.levels ?? null,
               lat,
               lon,
+              // Not sent; used to collapse parts down to one row per structure.
+              _index: i,
+              _structureArea: b.structure_footprint_m2 ?? null,
             };
           });
+
+          // One row per structure, represented by its tallest part, carrying the
+          // structure's union ground area rather than that part's own footprint.
+          const payload = perPart
+            .slice()
+            .sort((a, b) => b.h - a.h)
+            .filter((row) => {
+              if (seenStructure.has(row.id)) return false;
+              seenStructure.add(row.id);
+              return true;
+            })
+            .map(({ _index, _structureArea, ...row }) => {
+              void _index;
+              return {
+                ...row,
+                footprint_m2: _structureArea ?? row.footprint_m2,
+              };
+            });
 
           setEuiStatus('loading');
           api
             .ewrbBuildingEuis(payload)
             .then((res) => {
               if (disposed) return;
+              // A structure's intensity colours every part of it, so the podium
+              // and its towers read as one building.
               const byIndex = new Map<number, number>();
               res.buildings.forEach((row) => {
-                const idx = idToIndex.get(row.id);
-                if (idx != null) byIndex.set(idx, row.eui);
+                for (const idx of idToIndices.get(row.id) ?? []) {
+                  byIndex.set(idx, row.eui);
+                }
               });
               // The few heaviest buildings get their own colour, so pick them
-              // from the reported rows rather than from a threshold.
+              // from the reported rows rather than from a threshold. One row per
+              // structure now, so these are five distinct buildings.
               const ranked = [...res.buildings].sort((a, b) => b.eui - a.eui);
               const top = ranked.slice(0, EUI_TOP_N);
               const topIndices = new Set<number>();
               top.forEach((row) => {
-                const idx = idToIndex.get(row.id);
-                if (idx != null) topIndices.add(idx);
+                for (const idx of idToIndices.get(row.id) ?? []) {
+                  topIndices.add(idx);
+                }
               });
 
               if (built.tint.slots.length) {
@@ -2103,7 +2269,13 @@ export default function TorontoCityViewer({
 
               setEuiTop(
                 top.map((row) => {
-                  const idx = idToIndex.get(row.id);
+                  // The tallest part is the one worth naming and flying to.
+                  const parts = idToIndices.get(row.id) ?? [];
+                  const idx = parts.length
+                    ? parts.reduce((best, i) =>
+                        electric[i].h > electric[best].h ? i : best,
+                      )
+                    : undefined;
                   return {
                     ...row,
                     name: idx != null ? nameByIndex.get(idx) ?? null : null,

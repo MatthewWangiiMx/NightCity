@@ -206,3 +206,16 @@ input[type="range"].nc-track-none::-moz-range-track {
 input[type="range"].nc-track-none::-moz-range-progress {
   background: transparent;
 }
+
+@layer base {
+  /* Tailwind v4's Preflight dropped v3's `cursor: pointer` on buttons, matching
+     the bare browser default. Every <button> here is a real control, so restore
+     it once instead of adding `cursor-pointer` to 20 call sites.
+
+     This belongs in @layer base, not at the top level: unlayered rules outrank
+     Tailwind's utilities, which would defeat the `disabled:cursor-not-allowed`
+     and `disabled:cursor-default` utilities already in use. */
+  button:not(:disabled) {
+    cursor: pointer;
+  }
+}

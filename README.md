@@ -22,11 +22,12 @@ backend/            FastAPI + deterministic simulator + heuristic optimizer
   app/data/         ewrb.py — the reported EWRB dataset, units normalised
   app/db/           TigerData session, repository, migrations/001_init.sql
   scripts/build_grid.py  deterministic PostGIS distribution-tree builder
+  scripts/cluster_structures.py  groups 3D Massing parts into logical structures
   app/llm/          optional Claude explanation layer (never authoritative)
   data/             odc_final_dataset_2024.csv — the published EWRB extract
 frontend/           React + TypeScript + Vite + Tailwind
   src/pages/        Home, Explore, Simulate, Plan, Building Detail
-  src/components/   map/ (isometric district + timeline), charts/ (Recharts), panels/
+  src/components/   map/ (3D city viewer + timeline), charts/ (Recharts), panels/
   src/demo/         hardcoded run data, standing in for the simulator
   src/hooks/        useRun (API with demo fallback), usePlayback
 docs/               METRICS.md (equations), TIGERDATA.md (database setup)
@@ -216,6 +217,5 @@ the app runs with `USE_DATABASE=false` and `ENABLE_LLM=false`.
 1. `app/sim/simulator.py` — `simulate()` still raises: demand curve, solar/wind profiles, battery
    state machine, thermal model. The EWRB diurnal shapes in `app/sim/ewrb_profile.py` are a
    reasonable starting baseline for the demand curve.
-2. Flow animation in `DistrictMap`.
-3. Feed the Plan page's flexibility sliders into `RunRequest.params` so they drive a rerun instead
+2. Feed the Plan page's flexibility sliders into `RunRequest.params` so they drive a rerun instead
    of scaling the current plan.

@@ -398,7 +398,7 @@ def list_buildings_for_loads(limit: int = 1200) -> list[dict]:
                 WITH scoped AS (
                     SELECT id, height_m, levels, properties, geom,
                            COALESCE(structure_id, id) AS sid,
-                           structure_footprint_m2
+                           structure_footprint_m2, structure_eui_key
                     FROM buildings
                     WHERE geom && ST_MakeEnvelope(:lon_min, :lat_min, :lon_max, :lat_max, 4326)
                       AND NOT is_duplicate
@@ -408,7 +408,7 @@ def list_buildings_for_loads(limit: int = 1200) -> list[dict]:
                     FROM scoped
                     ORDER BY sid, COALESCE(height_m, 0) DESC, id
                 )
-                SELECT id, height_m, levels, properties,
+                SELECT id, height_m, levels, properties, structure_eui_key,
                        ST_X(ST_Centroid(geom)) AS lon,
                        ST_Y(ST_Centroid(geom)) AS lat,
                        COALESCE(
@@ -562,6 +562,7 @@ def list_buildings_for_massing(
                        ST_AsGeoJSON(b.geom)::json AS geojson,
                        COALESCE(b.structure_id, b.id) AS structure_id,
                        b.structure_footprint_m2,
+                       b.structure_eui_key,
                        bn.transformer_id AS node_id
                 FROM buildings b
                 LEFT JOIN building_nodes bn ON bn.building_id = b.id
@@ -595,6 +596,7 @@ def get_building(building_id: int) -> dict | None:
             text(
                 """
                 SELECT id, source_file, source_id, height_m, levels, properties,
+                       structure_eui_key,
                        ST_AsGeoJSON(geom)::json AS geojson,
                        ST_X(ST_Centroid(geom)) AS lon,
                        ST_Y(ST_Centroid(geom)) AS lat,

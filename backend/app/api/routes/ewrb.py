@@ -212,7 +212,9 @@ def read_building_profile(
 
     footprint = float(row.get("footprint_m2") or 0) or 500.0
     profile = ewrb_profile.build_profile(
-        building_id=f"tiger-{building_id}",
+        # Prefer the stored geometry-derived key so this agrees with the
+        # viewer, which sends the same string.
+        building_id=row.get("structure_eui_key") or f"tiger-{building_id}",
         name=f"Building {building_id}",
         kind=None,
         footprint_m2=footprint,
@@ -329,7 +331,9 @@ def read_live_district(
         if footprint <= 0:
             continue
         profile = ewrb_profile.build_profile(
-            building_id=f"tiger-{row['id']}",
+            # Same key the viewer uses for this structure, so a building's
+            # intensity in Plan matches the one Explore paints on it.
+            building_id=row.get("structure_eui_key") or f"tiger-{row['id']}",
             name=f"Building {row['id']}",
             kind=None,
             footprint_m2=footprint,
@@ -400,7 +404,9 @@ def read_plan(
         if footprint <= 0:
             continue
         profile = ewrb_profile.build_profile(
-            building_id=f"tiger-{row['id']}",
+            # Same key the viewer uses for this structure, so a building's
+            # intensity in Plan matches the one Explore paints on it.
+            building_id=row.get("structure_eui_key") or f"tiger-{row['id']}",
             name=f"Building {row['id']}",
             kind=None,
             footprint_m2=footprint,

@@ -22,12 +22,15 @@ backend/            FastAPI + deterministic simulator + heuristic optimizer
   app/data/         ewrb.py — the reported EWRB dataset, units normalised
   app/db/           TigerData session, repository, migrations/001_init.sql
   scripts/build_grid.py  deterministic PostGIS distribution-tree builder
-  scripts/cluster_structures.py  groups 3D Massing parts into logical structures
+  scripts/cluster_structures.py  groups 3D Massing parts into logical structures,
+                    and derives each one's stable EWRB cohort key
+  scripts/apply_migrations.py  runs app/db/migrations/*.sql in order
   app/llm/          optional Claude explanation layer (never authoritative)
   data/             odc_final_dataset_2024.csv — the published EWRB extract
 frontend/           React + TypeScript + Vite + Tailwind
   src/pages/        Home, Explore, Simulate, Plan, Building Detail
-  src/components/   map/ (3D city viewer + timeline), charts/ (Recharts), panels/
+  src/components/   map/ (3D city viewer + timeline, euiKey.ts), charts/ (Recharts),
+                    panels/
   src/demo/         hardcoded run data, standing in for the simulator
   src/hooks/        useRun (API with demo fallback), usePlayback
 docs/               METRICS.md (equations), TIGERDATA.md (database setup)
@@ -49,9 +52,24 @@ falls back to its own estimates.
 EWRB rows carry a city and a three-character postal FSA, never coordinates or an address, so **no
 key joins a reported row to a 3D Massing footprint**. A building on the map is therefore matched to
 a *cohort* (FSA + property type, widening to city or province when the sample is thin) and given a
-fixed position in that cohort's reported spread, from a hash of its id. The intensity shown is a
-real filed value from a real comparable property; attributing it to that particular building is an
-estimate. `basis`, `scope`, `sample_size` and `comparable_ewrb_id` say so on every payload.
+fixed position in that cohort's reported spread, from a hash of its cohort key. The intensity
+shown is a real filed value from a real comparable property; attributing it to that particular
+building is an estimate. `basis`, `scope`, `sample_size` and `comparable_ewrb_id` say so on
+every payload.
+
+That key is **derived from the structure's geometry**, not from its row id: the centroid of its
+tallest part to five decimal places (~1 m), stored as `buildings.structure_eui_key` by
+`scripts/cluster_structures.py` and sent by every caller that asks EWRB about the building. The
+row id is a `BIGSERIAL`, so re-importing the massing renumbers it and silently re-rolls which
+comparable each building draws — the CN Tower moved from 444.8 to 115.2 kWh/m²·yr that way,
+rank 25 of its 26-row cohort to rank 1, with nothing wrong with either figure. Geometry does not
+change on re-import, so a building keeps its comparable across a re-import, a re-cluster or a
+move to another service.
+
+The draw is uniform over the cohort's ranks, so a thin cohort is coarse: M5J Office has 26
+plausible rows spanning 115–608 kWh/m²·yr, and one rank step near the bottom is already ~15. A
+building's position is stable, but it is a position in a real spread, not a measurement of that
+building.
 
 Absolute MWh and tCO₂e need floor area, which EWRB does not publish — that comes from the massing,
 so the totals need TigerData. Intensities work without it.

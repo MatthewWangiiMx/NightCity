@@ -195,6 +195,12 @@ def row_to_massing_building(row: dict[str, Any]) -> dict[str, Any] | None:
         # counting buildings or area works from these rather than from `id`.
         "structure_id": row.get("structure_id", row["id"]),
         "structure_footprint_m2": row.get("structure_footprint_m2"),
+        # The EWRB cohort key, derived from geometry so it survives a
+        # re-import. Everything that asks EWRB about this building must send
+        # this exact string, or the panel and the map report different
+        # intensities for the same tower. Absent until the clustering pass
+        # has run, and every caller falls back to the structure id.
+        "eui_key": row.get("structure_eui_key"),
         "node_id": row.get("node_id"),
         "h": cons["h"],
         "levels": cons["levels"],

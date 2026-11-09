@@ -41,6 +41,11 @@ export type MassingBuilding = {
   /** The structure's union ground area. Summing the parts' own footprints
    *  double-counts where a tower sits inside a podium. */
   structure_footprint_m2?: number | null;
+  /** The EWRB cohort key, derived from the structure's geometry so it
+   *  survives a re-import -- unlike `structure_id`, which is a serial.
+   *  Anything asking EWRB about this building must send this exact string.
+   *  Absent until the clustering pass has run; see map/euiKey.ts. */
+  eui_key?: string | null;
   node_id?: string;
   h: number;
   levels?: number;

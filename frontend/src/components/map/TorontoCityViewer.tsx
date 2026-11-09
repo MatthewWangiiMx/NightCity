@@ -47,6 +47,7 @@ import {
   matchLandmarksToBuildings,
   type MatchedLandmark,
 } from '@/components/map/torontoLandmarks';
+import { euiKeyFor } from '@/components/map/euiKey';
 import { api } from '@/api/client';
 import type { EwrbEuiRow } from '@/api/types';
 
@@ -152,6 +153,8 @@ type MassingBuilding = {
   structure_id?: number | string;
   /** The structure's union ground area, not this part's. */
   structure_footprint_m2?: number | null;
+  /** Geometry-derived EWRB cohort key; see map/euiKey.ts. */
+  eui_key?: string | null;
   node_id?: string;
   h: number;
   levels?: number;
@@ -634,6 +637,10 @@ export type BuildingPick = {
    *  structure the map coloured, or the number shown contradicts the colour. */
   structureId?: number | string;
   structureFootprintM2?: number | null;
+  /** The exact cohort key the map used for this building. Carried rather
+   *  than rebuilt, because rebuilding it is how the panel and the map came
+   *  to disagree before. */
+  euiKey?: string;
   /** The structure's cohort kind and tallest height. `kind` selects the EWRB
    *  property type, so a podium must not answer with its own. */
   structureKind?: string;
@@ -860,6 +867,7 @@ function buildCityMesh(
       buildingId: building.id,
       structureId: building.structure_id,
       structureFootprintM2: building.structure_footprint_m2 ?? null,
+      euiKey: euiKeyFor(building, index),
       // All three describe the structure, so clicking a podium reports the same
       // building -- and the same cohort -- as clicking its tower.
       structureKind: info?.kind,
@@ -1575,16 +1583,11 @@ export default function TorontoCityViewer({
         clearEwrb();
         return;
       }
-      // Must match `idForIndex` in the mesh effect exactly. EWRB hashes this
-      // string to place the building in its cohort, so a part-based key here
-      // would report a different intensity than the one the map painted -- the
-      // panel reading 230 on a building coloured for 400, and vice versa.
-      const id =
-        pick.structureId != null
-          ? `tiger-s${pick.structureId}`
-          : pick.buildingId != null
-            ? `tiger-${pick.buildingId}`
-            : `b-${pick.buildingIndex}`;
+      // The key the map itself used, carried on the pick. EWRB hashes this
+      // string to place the building in its cohort, so deriving it a second
+      // time here is what made the panel read 230 on a building coloured for
+      // 400. There is one derivation now, in euiKeyFor.
+      const id = pick.euiKey ?? `b-${pick.buildingIndex}`;
       // The structure's union area, for the same reason: floor area drives the
       // absolute figures, and the map asked about the whole building.
       const ewrbFootprint = pick.structureFootprintM2 ?? pick.footprint_m2;
@@ -2143,11 +2146,7 @@ export default function TorontoCityViewer({
           // by hashing this string, so keying on the part would hand one complex
           // a separate draw per polygon: a podium ranked against the tower
           // growing out of it, and several top-five slots for one building.
-          const idForIndex = (i: number) => {
-            const b = electric[i];
-            if (b.structure_id != null) return `tiger-s${b.structure_id}`;
-            return b.id != null ? `tiger-${b.id}` : `b-${i}`;
-          };
+          const idForIndex = (i: number) => euiKeyFor(electric[i], i);
           // One key now covers every part of a structure, so a returned EUI has
           // to paint all of them.
           const idToIndices = new Map<string, number[]>();

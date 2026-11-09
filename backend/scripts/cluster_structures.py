@@ -24,6 +24,13 @@ ground area, which is what absolute energy and emissions must divide by) and
 ``is_duplicate`` (parts whose footprint repeats one already counted -- kept in
 the table, excluded from rendering and from any total).
 
+``structure_eui_key`` is the structure's EWRB cohort key: the string that
+``app/sim/ewrb_profile.py`` hashes to decide which real filed property the
+building is shown as. It is derived from the centroid of the structure's
+tallest part rather than from ``structure_id``, because ``structure_id`` comes
+from a BIGSERIAL and a re-import renumbers it -- which silently re-rolls every
+building's reported comparable. See migrations/006_structure_eui_key.sql.
+
 The self-join is tiled; the ungated version does not finish in a sane time on
 428k rows. Tiles carry a halo so a structure straddling a tile edge is still
 seen whole, and union-find runs across all tiles at once, so the result does
@@ -75,6 +82,33 @@ AREA_SQL = """
 SELECT ST_Area(geography(ST_Union(ST_Force2D(geom))))
 FROM buildings WHERE id = ANY(:ids)
 """
+
+CENTROID_SQL = """
+SELECT id,
+       COALESCE(height_m, 0) AS h,
+       ST_Y(ST_Centroid(ST_Force2D(geom))) AS lat,
+       ST_X(ST_Centroid(ST_Force2D(geom))) AS lon
+FROM buildings WHERE id = ANY(:ids)
+"""
+
+# Decimal places kept in the cohort key. Five is ~1.1 m of latitude and ~0.8 m
+# of longitude here, which leaves 4 of 4,923 downtown structures sharing a key;
+# four places is ~11 m and collides on 367 of them, six places is ~0.11 m and
+# collides on none. Five is the balance: the centroid is computed from one
+# part's geometry and so is identical on a re-import whatever the precision, but
+# a coordinate revision upstream can nudge it by centimetres, which a 0.11 m
+# cell would not absorb. Collisions are reported, not silently merged.
+KEY_PRECISION = 5
+
+
+def eui_key(lat: float, lon: float) -> str:
+    """The cohort key for a structure whose tallest part is centred here.
+
+    Stored on every part of the structure so that each read path serves one
+    identical string, rather than each deriving it and disagreeing in the
+    last digit.
+    """
+    return f"tiger-g{lat:.{KEY_PRECISION}f},{lon:.{KEY_PRECISION}f}"
 
 
 class UnionFind:
@@ -206,18 +240,51 @@ def main() -> int:
             if n % 500 == 0 or n == len(live):
                 print(f"  {n}/{len(live)}  ({time.perf_counter() - t1:.0f}s)")
 
+        # The tallest part speaks for the structure, with the lowest id
+        # breaking a tie, so the key is deterministic across reruns.
+        # Duplicate parts are passed over when choosing it, for the same
+        # reason they are excluded everywhere else; a group that is nothing
+        # but duplicates falls back to all of its members.
+        print("deriving cohort keys from geometry...")
+        centroids = {
+            r[0]: (float(r[1]), float(r[2]), float(r[3]))
+            for r in conn.execute(text(CENTROID_SQL), {"ids": ids}).all()
+        }
+        keys: dict[int, str] = {}
+        for gid, members in groups.items():
+            pool = [i for i in members if i not in dupes] or members
+            tallest = min(pool, key=lambda i: (-centroids[i][0], i))
+            _, lat, lon = centroids[tallest]
+            keys[gid] = eui_key(lat, lon)
+
+        by_key: dict[str, list[int]] = defaultdict(list)
+        for gid, key in keys.items():
+            by_key[key].append(gid)
+        shared = {k: v for k, v in by_key.items() if len(v) > 1}
+        print(f"  distinct keys: {len(by_key):,} for {len(keys):,} structures")
+        if shared:
+            # Two structures centred this close together draw the same
+            # comparable. That is a repeated draw, not a wrong one, so it is
+            # reported rather than worked around.
+            print(f"  WARNING: {len(shared)} key(s) shared by >1 structure:")
+            for key, gids in list(shared.items())[:5]:
+                print(f"    {key} <- structures {gids}")
+
         conn.execute(text("""
             CREATE TEMP TABLE _sid (
                 id BIGINT PRIMARY KEY,
                 structure_id BIGINT,
                 structure_footprint_m2 DOUBLE PRECISION,
-                is_duplicate BOOLEAN
+                is_duplicate BOOLEAN,
+                structure_eui_key TEXT
             ) ON COMMIT DROP
         """))
         conn.execute(
             text("""
-                INSERT INTO _sid (id, structure_id, structure_footprint_m2, is_duplicate)
-                VALUES (:id, :structure_id, :structure_footprint_m2, :is_duplicate)
+                INSERT INTO _sid (id, structure_id, structure_footprint_m2,
+                                  is_duplicate, structure_eui_key)
+                VALUES (:id, :structure_id, :structure_footprint_m2,
+                        :is_duplicate, :structure_eui_key)
             """),
             [
                 {
@@ -225,6 +292,7 @@ def main() -> int:
                     "structure_id": uf.find(i),
                     "structure_footprint_m2": areas.get(uf.find(i)),
                     "is_duplicate": i in dupes,
+                    "structure_eui_key": keys.get(uf.find(i)),
                 }
                 for i in ids
             ],
@@ -233,12 +301,14 @@ def main() -> int:
             UPDATE buildings b
                SET structure_id = s.structure_id,
                    structure_footprint_m2 = s.structure_footprint_m2,
-                   is_duplicate = s.is_duplicate
+                   is_duplicate = s.is_duplicate,
+                   structure_eui_key = s.structure_eui_key
               FROM _sid s
              WHERE s.id = b.id
                AND (b.structure_id IS DISTINCT FROM s.structure_id
                  OR b.structure_footprint_m2 IS DISTINCT FROM s.structure_footprint_m2
-                 OR b.is_duplicate IS DISTINCT FROM s.is_duplicate)
+                 OR b.is_duplicate IS DISTINCT FROM s.is_duplicate
+                 OR b.structure_eui_key IS DISTINCT FROM s.structure_eui_key)
         """)).rowcount
         print(f"\nrows updated: {updated:,}")
     return 0

@@ -25,7 +25,6 @@ backend/            FastAPI + deterministic simulator + heuristic optimizer
   scripts/cluster_structures.py  groups 3D Massing parts into logical structures,
                     and derives each one's stable EWRB cohort key
   scripts/apply_migrations.py  runs app/db/migrations/*.sql in order
-  app/llm/          optional Claude explanation layer (never authoritative)
   data/             odc_final_dataset_2024.csv — the published EWRB extract
 frontend/           React + TypeScript + Vite + Tailwind
   src/pages/        Home, Explore, Simulate, Plan, Building Detail
@@ -227,8 +226,8 @@ WHERE is_tie AND normally_open
 ORDER BY edge_id;
 ```
 
-`GET /api/health` reports whether the database and LLM layer are wired up. Both are optional —
-the app runs with `USE_DATABASE=false` and `ENABLE_LLM=false`.
+`GET /api/health` reports whether the database is wired up. It is optional — the app runs with
+`USE_DATABASE=false`.
 
 ## Next steps
 

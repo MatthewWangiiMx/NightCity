@@ -1,7 +1,7 @@
 """Wire contracts shared with the frontend (mirrored in frontend/src/api/types.ts).
 
 Skeleton: fields are the shape we intend to send; values are produced by the
-deterministic simulator, never by the LLM.
+deterministic simulator.
 """
 
 from __future__ import annotations
@@ -134,7 +134,7 @@ class RunResult(BaseModel):
     optimized_metrics: Metrics
     grid_status: GridStatus
     actions: list[DispatchAction]
-    explanation: str | None = None     # LLM text, optional and non-authoritative
+    explanation: str | None = None     # provenance note, set by whatever built the run
     is_simulated: bool = True          # always true: this is a digital twin
     # TigerData weather window aligned to the run (may be empty).
     weather: list[WeatherObservation] = Field(default_factory=list)

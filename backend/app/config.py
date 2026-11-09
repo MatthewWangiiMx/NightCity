@@ -12,11 +12,6 @@ class Settings(BaseSettings):
     tigerdata_url: str = ""
     use_database: bool = False
 
-    # LLM explanation layer
-    anthropic_api_key: str = ""
-    llm_model: str = "claude-sonnet-5-5"
-    enable_llm: bool = False
-
     # Server
     cors_origins: str = "http://localhost:5173"
     open_meteo_forecast_url: str = "https://api.open-meteo.com/v1/forecast"

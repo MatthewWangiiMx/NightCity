@@ -68,7 +68,7 @@ export type MassingData = {
 };
 
 export const api = {
-  health: () => request<{ status: string; database: string; llm: string }>('/health'),
+  health: () => request<{ status: string; database: string }>('/health'),
   district: (id = 'nightcity') => request<District>(`/district/${id}`),
   scenarios: () => request<Scenario[]>('/scenarios'),
   run: (body: RunRequest) =>

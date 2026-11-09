@@ -18,6 +18,4 @@ Window and resolution: `STEP_MINUTES = 15`.
 - Comfort is a **hard constraint**. A plan that violates the bounds is rejected by
   `optimizer.validate()`, not traded off against cost or emissions.
 - Baseline and optimized runs use **identical inputs**; only the dispatch plan differs.
-- The LLM layer narrates these numbers and never produces them. If the API call fails,
-  the deterministic `reason` text on each action is shown instead.
 - Everything is simulated. Present as a prototype digital twin, not measured results.
